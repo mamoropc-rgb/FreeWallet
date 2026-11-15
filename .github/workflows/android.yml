@@ -30,8 +30,10 @@ jobs:
           test -f app/src/main/java/com/mamoro/karman/BankPushParser.kt
           test -f app/src/main/java/com/mamoro/karman/BankImportRules.kt
           test -f app/src/main/java/com/mamoro/karman/BankImportSettingsUi.kt
-          grep -q 'versionCode = 5' app/build.gradle.kts
-          grep -q 'versionName = "1.0.4"' app/build.gradle.kts
+          test -f app/src/main/java/com/mamoro/karman/BankSubaccounts.kt
+          test -f app/src/test/java/com/mamoro/karman/LedgerDbMigrationTest.kt
+          grep -q 'versionCode = 6' app/build.gradle.kts
+          grep -q 'versionName = "1.0.5"' app/build.gradle.kts
           if find . -name '*.p12' -o -name '*.jks' -o -name '*.keystore' | grep -q .; then
             echo 'Private signing material must not be in the repository'; exit 1
           fi
@@ -55,7 +57,7 @@ jobs:
       - name: Upload debug APK (test only, not update-compatible)
         uses: actions/upload-artifact@v4
         with:
-          name: Karman-1.0.4-DEBUG-test-only
+          name: Karman-1.0.5-DEBUG-test-only
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Validate stable signing identity
@@ -107,14 +109,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v4
         with:
-          name: Karman-1.0.4-RELEASE-signed
+          name: Karman-1.0.5-RELEASE-signed
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
       - name: Upload test and lint reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Karman-1.0.4-verification-reports
+          name: Karman-1.0.5-verification-reports
           path: |
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
