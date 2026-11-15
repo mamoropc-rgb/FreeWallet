@@ -1,6 +1,6 @@
 # Подпись стабильных обновлений Karman
 
-Приложение использует прежний `applicationId`: `com.mamoro.karman`. Версия исходников: 1.0.2, `versionCode = 3`.
+Приложение использует прежний `applicationId`: `com.mamoro.karman`. Версия исходников: 1.0.3, `versionCode = 3`.
 
 ## Главное правило
 
@@ -27,7 +27,7 @@ GitHub → Settings → Secrets and variables → Actions → New repository sec
 
 ## Сборка
 
-После установки секретов: Actions → `Karman Android — verified build and signed update` → Run workflow (ветка `main`). Только скачанный из `Karman-1.0.2-RELEASE-signed` файл `app-release.apk` должен использоваться как обновление.
+После установки секретов: Actions → `Karman Android — verified build and signed update` → Run workflow (ветка `main`). Только скачанный из `Karman-1.0.3-RELEASE-signed` файл `app-release.apk` должен использоваться как обновление.
 
 Если секретов нет, релиз завершается ошибкой (но debug APK и отчёты тестов остаются доступными). Это намеренно: зелёная галочка не должна скрывать отсутствие подписанного APK.
 
