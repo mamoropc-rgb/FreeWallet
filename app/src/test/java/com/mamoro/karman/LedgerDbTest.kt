@@ -152,6 +152,41 @@ class LedgerDbTest {
         db.deleteEntry(entry.id)
         assertTrue(db.snapshot().entries.isEmpty())
     }
+    @Test fun bankSubaccountsKeepIndependentMoneyAndBackupLinks() {
+        val a=db.account("Основная", "RUB", 500_00L,"Т-Банк","2017")
+        val b=db.account("Сбережения", "RUB", 2000_00L,"Тинькофф","8002")
+        assertEquals("Т-Банк",db.snapshot().accounts.first { it.id==b }.bankGroup)
+        db.entry(Kind.EXPENSE,a,100_00L,"Продукты")
+        db.entry(Kind.TRANSFER,a,250_00L,"Перевод",toId=b)
+        val s=db.snapshot()
+        assertEquals(150_00L,LedgerMath.accountLocal(s.accounts.first{it.id==a},s.entries))
+        assertEquals(2250_00L,LedgerMath.accountLocal(s.accounts.first{it.id==b},s.entries))
+        assertEquals(2400_00L,s.accounts.filter{it.bankGroup=="Т-Банк"}.sumOf{LedgerMath.accountBase(it,s.entries)})
+        val json=db.exportJson()
+        db.importJson(json)
+        assertEquals("2017",db.snapshot().accounts.first{it.id==a}.cardLast4)
+        assertEquals("8002",db.snapshot().accounts.first{it.id==b}.cardLast4)
+        assertEquals(2400_00L,db.snapshot().accounts.filter{it.bankGroup=="Т-Банк"}.sumOf{LedgerMath.accountBase(it,db.snapshot().entries)})
+        assertThrows(IllegalArgumentException::class.java) {
+            db.editAccount(b,"Копия","RUB",2000_00L,"Т-Банк","2017")
+        }
+    }
+    @Test fun bankPushRoutesToCorrectSubaccountAndSkipsUnknownCard() {
+        val a=db.account("Карта", "RUB", 1000_00L,"Т-Банк","2017")
+        val b=db.account("Вторая", "RUB", 2000_00L,"Т-Банк","8002")
+        db.setPreference("bankImportAccountId",a.toString())
+        db.setPreference("bankImportEnabled","1")
+        val now=System.currentTimeMillis()
+        val items=listOf(BankPurchase("Пятёрочка",61096,"2017"),BankPurchase("Магнит",50000,"8002"),
+            BankPurchase("Фастфуд",10000,null),BankPurchase("Неизвестная карта",10000,"9999"))
+        assertEquals(2,db.importBankPurchases(BankPushParser.T_BANK_PACKAGE,items,now))
+        assertEquals(0,db.importBankPurchases(BankPushParser.T_BANK_PACKAGE,items,now+60_000))
+        val s=db.snapshot()
+        assertEquals(38904L,LedgerMath.accountLocal(s.accounts.first { it.id==a },s.entries))
+        assertEquals(150000L,LedgerMath.accountLocal(s.accounts.first { it.id==b },s.entries))
+        assertEquals(2,s.entries.size)
+        assertTrue(s.entries.all{it.kind==Kind.EXPENSE})
+    }
     @Test fun bondSaleUsesFifoAndCreditsWallet() {
         val a=db.snapshot().accounts.first().id
         val b=db.bond("Бонд",a,100000,100000,800)

@@ -12,6 +12,15 @@ class BankPushParserTest {
         assertEquals(listOf("Пятёрочка", "Фастфуд"), purchases.map { it.merchant })
         assertEquals(listOf(61096L, 50000L), purchases.map { it.amountMinor })
     }
+    @Test fun readsOnlyCompleteFourDigitsAndNeverImportsExtraAmounts() {
+        val items=BankPushParser.parse(listOf(
+            "Пятёрочка Покупка на 610,96 ₽, кешбэк 6 ₽, счёт карты *2017",
+            "Магнит Покупка на 500 ₽, кешбэк 5 ₽, счёт карты *8002",
+            "Фастфуд Покупка на 100 ₽, кешбэк 1 ₽, счёт карты *80..."
+        ))
+        assertEquals(listOf("2017", "8002", null), items.map { it.cardLast4 })
+        assertEquals(listOf(61096L,50000L,10000L), items.map { it.amountMinor })
+    }
     @Test fun refusesUnknownAndNonPurchases() {
         assertTrue(BankPushParser.parse(listOf(
             "Кешбэк 10 ₽", "Перевод на 3 000 ₽", "Возврат Покупка на 2 500 ₽",
