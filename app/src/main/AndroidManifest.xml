@@ -6,6 +6,15 @@
         android:icon="@drawable/ic_karman"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false">
+        <service
+            android:name=".BankNotificationListener"
+            android:label="Учёт покупок из уведомлений"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         <activity
             android:name=".MainActivity"
             android:exported="true"
