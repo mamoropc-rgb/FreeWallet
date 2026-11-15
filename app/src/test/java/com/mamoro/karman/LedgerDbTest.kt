@@ -76,6 +76,49 @@ class LedgerDbTest {
         assertEquals(1,db.snapshot().entries.size)
         assertEquals(-2500L,LedgerMath.cashBase(db.snapshot()))
     }
+    @Test fun creatingBondDoesNotCorruptAccountAndReopeningDataWorks() {
+        val account=db.snapshot().accounts.first().id
+        val bondId=db.bond("Без покупок",account,100_000L,95_000L,1000)
+        val state=db.snapshot()
+        assertEquals(account,bondId) // independent tables may share the same numeric ID
+        assertNotEquals(AccountRowKeys.account(account),AccountRowKeys.bond(bondId))
+        assertEquals(0L,LedgerMath.bondQuantity(state,bondId))
+        db.close()
+        db=LedgerDb(ApplicationProvider.getApplicationContext())
+        assertEquals(1,db.snapshot().bonds.size)
+        assertEquals(1,db.snapshot().accounts.size)
+    }
+    @Test fun accountEditAndSafeDelete() {
+        val rub=db.snapshot().accounts.first().id
+        val second=db.account("Резерв", "USD", 100_00L)
+        db.editAccount(second,"Резервный", "EUR", 200_00L)
+        assertEquals("EUR",db.snapshot().accounts.first { it.id==second }.currency)
+        db.entry(Kind.INCOME,second,100_00L,"Подарок")
+        db.editAccount(second,"Переименован", "EUR", 200_00L)
+        assertEquals("Переименован",db.snapshot().accounts.first { it.id==second }.name)
+        assertThrows(IllegalArgumentException::class.java) { db.editAccount(second,"Нельзя", "USD", 200_00L) }
+        assertThrows(IllegalArgumentException::class.java) { db.deleteAccount(second) }
+        db.deleteAccount(rub) // unused non-last account is deletable
+        assertEquals(1,db.snapshot().accounts.size)
+    }
+    @Test fun removeEmptyAccountWithoutDeletingTransactions() {
+        val rub=db.snapshot().accounts.first().id
+        val disposable=db.account("Временный", "RUB", 0L)
+        db.deleteAccount(disposable)
+        assertEquals(listOf(rub),db.snapshot().accounts.map{it.id})
+        assertThrows(IllegalArgumentException::class.java) {db.deleteAccount(rub)}
+    }
+    @Test fun liveFxFromSettingsDoesNotRewriteHistoricalTransactions() {
+        val id=db.account("Карта", "USD",0L)
+        db.setPreference("usdPerBaseMicros","10000") // 1 USD = 100 RUB
+        db.entry(Kind.INCOME,id,100_00L,"Доход")
+        assertEquals(1_000_000L,LedgerMath.cashBase(db.snapshot()))
+        db.setPreference("usdPerBaseMicros","20000") // 1 USD = 50 RUB
+        assertEquals(1_000_000L,LedgerMath.cashBase(db.snapshot()))
+        db.entry(Kind.INCOME,id,100_00L,"Доход")
+        assertEquals(1_500_000L,LedgerMath.cashBase(db.snapshot()))
+        assertEquals(200_00L,LedgerMath.accountLocal(db.snapshot().accounts.first{it.id==id},db.snapshot().entries))
+    }
     @Test fun bondSaleUsesFifoAndCreditsWallet() {
         val a=db.snapshot().accounts.first().id
         val b=db.bond("Бонд",a,100000,100000,800)
