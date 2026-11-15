@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -111,6 +112,7 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
     var quick by remember { mutableStateOf<Template?>(null) }
     var quickKind by remember { mutableStateOf(Kind.EXPENSE) }
     var showQuick by remember { mutableStateOf(false) }
+    var analyticsActive by remember { mutableStateOf(false) }
     val snackbar=remember { SnackbarHostState() }
     val scope=rememberCoroutineScope()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
@@ -133,7 +135,7 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
         snackbarHost={SnackbarHost(snackbar)},
         floatingActionButton={
             // Home already has four prominent actions; avoid covering the Goals card.
-            if(pager.currentPage in 1..2) FloatingActionButton(
+            if(pager.currentPage==2 || (pager.currentPage==1 && !analyticsActive)) FloatingActionButton(
                 onClick={quick=null;quickKind=Kind.EXPENSE;showQuick=true},
                 containerColor=MaterialTheme.colorScheme.primary, contentColor=MaterialTheme.colorScheme.onPrimary,
                 shape=RoundedCornerShape(18.dp)) {Icon(Icons.Default.Add,"Новая операция")}
@@ -160,7 +162,7 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
                 },onNavigate={pager.requestScrollToPage(it)},onNewOperation={kind ->
                     quick=null;quickKind=kind;showQuick=true
                 })
-                1->HistoryTab(s,vm)
+                1->HistoryTab(s,vm,currentDay,onAnalyticsModeChange={analyticsActive=it})
                 2->PlansTab(s,vm)
                 3->AccountsTab(s,vm)
                 else->SettingsTab(s,vm)
@@ -227,8 +229,10 @@ fun TransactionRow(e:Entry,s:Snapshot,modifier:Modifier=Modifier, trailing: (@Co
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HistoryTab(s:Snapshot,vm:KarmanViewModel) {
+fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
+               onAnalyticsModeChange:(Boolean)->Unit) {
     var filter by remember {mutableStateOf("ALL")}
     var chosen by remember {mutableStateOf<Entry?>(null)}
     var editing by remember {mutableStateOf(false)}
@@ -239,77 +243,177 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel) {
     var editError by remember {mutableStateOf<String?>(null)}
     var category by remember {mutableStateOf<String?>(null)}
     var search by remember { mutableStateOf("") }
-    var period by remember { mutableStateOf("ALL") }
-    val rows=remember(s,filter,category,search,period) {
-        val month=when(period) {
-            "CURRENT" -> YearMonth.now().toString()
-            "PREVIOUS" -> YearMonth.now().minusMonths(1).toString()
-            else -> null
-        }
+    var showSearch by remember {mutableStateOf(false)}
+    var selectedMode by rememberSaveable {mutableStateOf("OPERATIONS")}
+    LaunchedEffect(selectedMode) { onAnalyticsModeChange(selectedMode=="ANALYTICS") }
+    var monthOffset by rememberSaveable {mutableIntStateOf(0)}
+    var selectedAccount by rememberSaveable {mutableStateOf("ALL")}
+    var monthMenu by remember {mutableStateOf(false)}
+    var accountMenu by remember {mutableStateOf(false)}
+    val month=YearMonth.from(today).minusMonths(monthOffset.toLong())
+    val ru=java.util.Locale.forLanguageTag("ru-RU")
+    val accountIds=remember(s.accounts,selectedAccount) {when {
+        selectedAccount=="ALL" -> null
+        selectedAccount.startsWith("BANK:") -> s.accounts.filter {
+            it.bankGroup==selectedAccount.removePrefix("BANK:") }.map {it.id}.toSet()
+        selectedAccount.startsWith("ACCOUNT:") -> setOfNotNull(
+            selectedAccount.removePrefix("ACCOUNT:").toLongOrNull())
+        else -> null
+    }}
+    val accountLabel=remember(s.accounts,selectedAccount) {when {
+        selectedAccount=="ALL" -> "Счета и карты"
+        selectedAccount.startsWith("BANK:") -> selectedAccount.removePrefix("BANK:")
+        else -> s.accounts.find { "ACCOUNT:${it.id}"==selectedAccount }?.name ?: "Счета и карты"
+    }}
+    val rows=remember(s.entries,s.accounts,filter,category,search,month,accountIds) {
         val needle=search.trim()
         val accountNames=s.accounts.associate { it.id to it.name }
         s.entries.filter { e ->
-            (filter=="ALL" || filter=="IN"&&e.kind in listOf(Kind.INCOME,Kind.COUPON,Kind.SELL)
-              ||filter=="OUT"&&e.kind in listOf(Kind.EXPENSE,Kind.BUY)) &&
+            (accountIds==null || e.fromAccount in accountIds ||
+                (e.kind==Kind.TRANSFER && e.toAccount in accountIds)) &&
+                e.day.startsWith(month.toString()) &&
+                (filter=="ALL" || filter=="IN" && e.kind in listOf(Kind.INCOME,Kind.COUPON,Kind.SELL) ||
+                    filter=="OUT" && e.kind in listOf(Kind.EXPENSE,Kind.BUY)) &&
                 (category==null || e.category==category) &&
-                (month==null || e.day.startsWith(month)) &&
                 (needle.isEmpty() || e.category.contains(needle,ignoreCase=true) ||
-                  e.note.contains(needle,ignoreCase=true) ||
-                  e.day.contains(needle,ignoreCase=true) ||
-                  (accountNames[e.fromAccount]?.contains(needle,ignoreCase=true)==true))
-        }
+                    e.note.contains(needle,ignoreCase=true) ||
+                    e.day.contains(needle,ignoreCase=true) ||
+                    (accountNames[e.fromAccount]?.contains(needle,ignoreCase=true)==true))
+        }.sortedWith(compareByDescending<Entry> {it.day}.thenByDescending {it.id})
     }
+    val dailyTotals=remember(rows) { rows.groupBy { it.day }.mapValues { (_, dayRows) ->
+        dayRows.sumOf { row -> when(row.kind) {
+            Kind.INCOME -> row.baseMinor
+            Kind.EXPENSE -> -row.baseMinor
+            else -> 0L
+        } }
+    } }
     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(horizontal=18.dp,vertical=8.dp),
-        verticalArrangement=Arrangement.spacedBy(10.dp)) {
-        item { TitleBar("История","Операции и аналитика") }
-        item { Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            listOf("ALL" to "Все","OUT" to "Расходы","IN" to "Доходы").forEach{ (k,v)->
-                FilterChip(selected=filter==k,onClick={filter=k;category=null},label={Text(v)})
-            }
-        }}
-        item {
-            OutlinedTextField(value=search,onValueChange={search=it},
-                modifier=Modifier.fillMaxWidth(),singleLine=true,
-                label={Text("Поиск по операциям")},
-                leadingIcon={Icon(Icons.Default.Search,contentDescription=null)})
-        }
-        item {
-            androidx.compose.foundation.lazy.LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                items(listOf("ALL" to "Всё время","CURRENT" to "Этот месяц","PREVIOUS" to "Прошлый месяц")) { (key,label) ->
-                    FilterChip(selected=period==key,onClick={period=key},label={Text(label)})
+        verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        item(key="history_header") {
+            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                Text("Операции",style=MaterialTheme.typography.headlineMedium,
+                    fontWeight=FontWeight.Bold,modifier=Modifier.weight(1f))
+                IconButton(onClick={showSearch=!showSearch}) {
+                    Icon(Icons.Default.Search,contentDescription="Поиск")
                 }
             }
         }
-        if(search.isNotBlank() || period!="ALL") item {
-            Row(verticalAlignment=Alignment.CenterVertically) {
-                Text("Найдено: ${rows.size}",color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.weight(1f))
-                TextButton(onClick={search="";period="ALL"}) {Text("Сбросить")}
+        item(key="history_selectors") {
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                Box {
+                    FilterChip(selected=true,onClick={monthMenu=true},
+                        label={Text(month.format(java.time.format.DateTimeFormatter.ofPattern("LLLL yyyy",ru)))},
+                        trailingIcon={Icon(Icons.Default.ArrowDropDown,null)})
+                    DropdownMenu(expanded=monthMenu,onDismissRequest={monthMenu=false}) {
+                        (0..11).forEach {offset->
+                            val m=YearMonth.from(today).minusMonths(offset.toLong())
+                            DropdownMenuItem(text={Text(m.format(java.time.format.DateTimeFormatter.ofPattern("LLLL yyyy",ru)))},
+                                onClick={monthOffset=offset;monthMenu=false;category=null})
+                        }
+                    }
+                }
+                Box {
+                    FilterChip(selected=selectedAccount!="ALL",onClick={accountMenu=true},
+                        label={Text(accountLabel,maxLines=1)},trailingIcon={Icon(Icons.Default.ArrowDropDown,null)})
+                    DropdownMenu(expanded=accountMenu,onDismissRequest={accountMenu=false}) {
+                        DropdownMenuItem(text={Text("Все счета")},onClick={selectedAccount="ALL";accountMenu=false})
+                        s.accounts.map {it.bankGroup.trim()}.filter {it.isNotBlank()}.distinct().forEach {name ->
+                            DropdownMenuItem(text={Text("Банк: $name")},onClick={selectedAccount="BANK:$name";accountMenu=false})
+                        }
+                        s.accounts.forEach {account->
+                            DropdownMenuItem(text={Text("${account.name} · ${account.currency}")},
+                                onClick={selectedAccount="ACCOUNT:${account.id}";accountMenu=false})
+                        }
+                    }
+                }
             }
         }
-        if(filter=="OUT") {
-            item {
-                val monthly=s.entries.filter{it.kind==Kind.EXPENSE&&YearMonth.from(LocalDate.parse(it.day))==YearMonth.now()}
-                val groups=monthly.groupBy{it.category}.mapValues {it.value.sumOf {e->e.baseMinor}}.toList().sortedByDescending{it.second}
-                KCard {
-                    Text("Расходы по категориям · ${YearMonth.now()}",fontWeight=FontWeight.Medium)
-                    Spacer(Modifier.height(8.dp))
-                    if(groups.isEmpty()) EmptyText("Нет расходов за текущий месяц")
-                    groups.take(8).forEach { (name,total)->
-                        val max=groups.maxOf{it.second}.coerceAtLeast(1L)
-                        Column(Modifier.fillMaxWidth().clickable {category=if(category==name)null else name}.padding(vertical=6.dp)) {
+        item(key="history_modes") {
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                listOf("OPERATIONS" to "Операции","ANALYTICS" to "Аналитика").forEachIndexed {index,(key,label)->
+                    SegmentedButton(shape=SegmentedButtonDefaults.itemShape(index=index,count=2),
+                        onClick={selectedMode=key},selected=selectedMode==key) { Text(label) }
+                }
+            }
+        }
+        if(selectedMode=="ANALYTICS") {
+            item(key="analytics_dashboard") {
+                HistoryAnalyticsDashboard(s,month,accountIds,today)
+            }
+        } else {
+            if(showSearch) item(key="history_search") {
+                OutlinedTextField(value=search,onValueChange={search=it},
+                    modifier=Modifier.fillMaxWidth(),singleLine=true,
+                    label={Text("Поиск по операциям")},
+                    leadingIcon={Icon(Icons.Default.Search,contentDescription=null)})
+            }
+            item(key="history_kinds") {
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    listOf("ALL" to "Все","OUT" to "Расходы","IN" to "Доходы").forEach { (k,v)->
+                        FilterChip(selected=filter==k,onClick={filter=k;category=null},label={Text(v)})
+                    }
+                }
+            }
+            item(key="history_totals") {
+                val expense=rows.filter {it.kind==Kind.EXPENSE}.sumOf {it.baseMinor}
+                val income=rows.filter {it.kind==Kind.INCOME}.sumOf {it.baseMinor}
+                Row(horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    PremiumGlassPanel(Modifier.weight(1f)) {
+                        Text(Money.text(expense,"RUB"),fontWeight=FontWeight.Bold,
+                            color=MaterialTheme.colorScheme.onSurface,maxLines=1)
+                        Text("Расходы",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    PremiumGlassPanel(Modifier.weight(1f)) {
+                        Text(Money.text(income,"RUB"),fontWeight=FontWeight.Bold,
+                            color=MaterialTheme.colorScheme.onSurface,maxLines=1)
+                        Text("Доходы",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            if(filter=="OUT") item(key="history_categories") {
+                val groups=rows.filter{it.kind==Kind.EXPENSE}
+                    .groupBy{it.category}.mapValues{it.value.sumOf {e->e.baseMinor}}
+                    .toList().sortedByDescending{it.second}
+                PremiumGlassPanel {
+                    Text("Расходы по категориям",fontWeight=FontWeight.SemiBold)
+                    if(groups.isEmpty()) EmptyText("Нет расходов за выбранный месяц")
+                    groups.take(7).forEach { (name,total) ->
+                        val max=groups.firstOrNull()?.second?.coerceAtLeast(1L) ?: 1L
+                        Column(Modifier.fillMaxWidth().clickable {category=if(category==name)null else name}.padding(vertical=5.dp)) {
                             Row { Text(name,modifier=Modifier.weight(1f));Text(Money.text(total,"RUB")) }
-                            Spacer(Modifier.height(5.dp))
-                            LinearProgressIndicator(progress={total.toFloat()/max},modifier=Modifier.fillMaxWidth(),
-                                color=Accent,trackColor=MaterialTheme.colorScheme.surfaceVariant)
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(progress={ (total.toFloat()/max).coerceIn(0f,1f) },
+                                modifier=Modifier.fillMaxWidth(),color=MaterialTheme.colorScheme.primary,
+                                trackColor=MaterialTheme.colorScheme.surfaceVariant)
                         }
                     }
                     if(category!=null) TextButton(onClick={category=null}) {Text("Сбросить категорию")}
                 }
             }
-        }
-        if(rows.isEmpty()) item {EmptyText("Записей не найдено")}
-        items(rows,key={it.id}) {e->
-            TransactionRow(e,s,Modifier.clickable{chosen=e;editing=false;editedCategory=e.category;editedNote=e.note;editedDate=e.day;editError=null})
+            if(rows.isEmpty()) item(key="history_empty") { EmptyText("Операций за выбранный период нет") }
+            rows.forEachIndexed {index,e->
+                if(index==0 || rows[index-1].day!=e.day) {
+                    item(key="day_${e.day}") {
+                        val dateLabel=runCatching {LocalDate.parse(e.day)}.getOrNull()?.let {d ->
+                            when(d) {today->"Сегодня";today.minusDays(1)->"Вчера";else->d.toString()}
+                        } ?: e.day
+                        val dailyTotal=dailyTotals[e.day] ?: 0L
+                        Row(Modifier.fillMaxWidth().padding(top=10.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Text(dateLabel,modifier=Modifier.weight(1f),fontWeight=FontWeight.SemiBold,
+                                style=MaterialTheme.typography.titleMedium)
+                            Text(Money.text(dailyTotal,"RUB"),color=MaterialTheme.colorScheme.onSurfaceVariant,
+                                style=MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                item(key="entry_${e.id}") {
+                    TransactionRow(e,s,Modifier.clickable {
+                        chosen=e;editing=false;editedCategory=e.category;editedNote=e.note;editedDate=e.day;editError=null
+                    })
+                }
+            }
+            item(key="history_bottom") {Spacer(Modifier.height(90.dp))}
         }
     }
     if(chosen!=null && !editing) AlertDialog(onDismissRequest={chosen=null},
