@@ -25,8 +25,9 @@ jobs:
           test -f settings.gradle.kts
           test -f app/src/main/java/com/mamoro/karman/PremiumHomeUi.kt
           test -f app/src/main/java/com/mamoro/karman/UntilIncomeMath.kt
-          grep -q 'versionCode = 3' app/build.gradle.kts
-          grep -q 'versionName = "1.0.2"' app/build.gradle.kts
+          test -f app/src/main/java/com/mamoro/karman/PremiumFxPolicy.kt
+          grep -q 'versionCode = 4' app/build.gradle.kts
+          grep -q 'versionName = "1.0.3"' app/build.gradle.kts
           if find . -name '*.p12' -o -name '*.jks' -o -name '*.keystore' | grep -q .; then
             echo 'Private signing material must not be in the repository'; exit 1
           fi
@@ -50,17 +51,17 @@ jobs:
       - name: Upload debug APK (test only, not update-compatible)
         uses: actions/upload-artifact@v4
         with:
-          name: Karman-1.0.2-DEBUG-test-only
+          name: Karman-1.0.3-DEBUG-test-only
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - name: Validate stable signing identity
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         shell: bash
         env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || secrets.KARMAN_KEYSTORE_BASE64 || secrets.KARMAN_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || secrets.KARMAN_STORE_PASSWORD || secrets.KARMAN_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.KARMAN_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || secrets.KARMAN_KEY_ALIAS }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
             echo 'Release signing secrets are missing. See SIGNING-SETUP.md.'
@@ -82,9 +83,9 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         env:
           KARMAN_KEYSTORE_PATH: ${{ runner.temp }}/karman-release.p12
-          KARMAN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KARMAN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          KARMAN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KARMAN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD || secrets.KARMAN_STORE_PASSWORD || secrets.KARMAN_KEYSTORE_PASSWORD }}
+          KARMAN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || secrets.KARMAN_KEY_PASSWORD }}
+          KARMAN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || secrets.KARMAN_KEY_ALIAS }}
         run: gradle --no-daemon --console=plain :app:assembleRelease
       - name: Verify signed APK certificate and signature
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
@@ -102,16 +103,15 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@v4
         with:
-          name: Karman-1.0.2-RELEASE-signed
+          name: Karman-1.0.3-RELEASE-signed
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
       - name: Upload test and lint reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Karman-1.0.2-verification-reports
+          name: Karman-1.0.3-verification-reports
           path: |
             app/build/reports/tests/
             app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
-          
