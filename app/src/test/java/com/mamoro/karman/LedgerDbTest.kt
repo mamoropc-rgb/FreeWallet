@@ -119,6 +119,39 @@ class LedgerDbTest {
         assertEquals(1_500_000L,LedgerMath.cashBase(db.snapshot()))
         assertEquals(200_00L,LedgerMath.accountLocal(db.snapshot().accounts.first{it.id==id},db.snapshot().entries))
     }
+    @Test fun bankImportIsOptInAndNeverAddsAdditionalCredits() {
+        val account=db.snapshot().accounts.first().id
+        val items=BankPushParser.parse(listOf(
+            "Пятёрочка Покупка на 610,96 ₽, кешбэк 6 ₽, счёт карты *2017",
+            "Магнит Покупка на 500 ₽, кешбэк 5 ₽, счёт карты *2017"))
+        val time=System.currentTimeMillis()
+        assertEquals(0,db.importBankPurchases(BankPushParser.T_BANK_PACKAGE,items,time))
+        db.setPreference("bankImportAccountId",account.toString())
+        db.setPreference("bankImportEnabled","1")
+        assertEquals(0,db.importBankPurchases("com.other.bank",items,time))
+        assertEquals(2,db.importBankPurchases(BankPushParser.T_BANK_PACKAGE,items,time))
+        assertEquals(0,db.importBankPurchases(BankPushParser.T_BANK_PACKAGE,items,time+60_000))
+        val entries=db.snapshot().entries
+        assertEquals(2,entries.size)
+        assertEquals(-111096L,LedgerMath.cashBase(db.snapshot()))
+        assertTrue(entries.all { it.kind==Kind.EXPENSE && it.note.isEmpty() })
+        assertEquals(setOf("Магнит","Пятёрочка"),entries.map { it.category }.toSet())
+        assertTrue(db.exportJson().contains("bankImportEnabled"))
+        assertFalse(db.exportJson().contains("кешбэк"))
+    }
+    @Test fun importedExpensesCanBeCorrectedInHistory() {
+        val id=db.snapshot().accounts.first().id
+        db.setPreference("bankImportAccountId",id.toString())
+        db.setPreference("bankImportEnabled","1")
+        val now=System.currentTimeMillis()
+        val item=BankPurchase("Магнит",10000L)
+        assertEquals(1,db.importBankPurchases(BankPushParser.T_BANK_PACKAGE,listOf(item),now))
+        val entry=db.snapshot().entries.single()
+        db.editEntryDetails(entry.id,"Продукты","Магнит",LocalDate.parse(entry.day))
+        assertEquals("Продукты", db.snapshot().entries.single().category)
+        db.deleteEntry(entry.id)
+        assertTrue(db.snapshot().entries.isEmpty())
+    }
     @Test fun bondSaleUsesFifoAndCreditsWallet() {
         val a=db.snapshot().accounts.first().id
         val b=db.bond("Бонд",a,100000,100000,800)
