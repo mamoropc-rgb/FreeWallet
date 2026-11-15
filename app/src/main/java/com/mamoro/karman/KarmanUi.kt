@@ -206,16 +206,18 @@ fun HomeTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,onQuick:(Template)->Un
 fun TransactionRow(e:Entry,s:Snapshot,modifier:Modifier=Modifier, trailing: (@Composable () -> Unit)?=null) {
     val incoming=e.kind in listOf(Kind.INCOME,Kind.COUPON,Kind.SELL)
     val account=s.accounts.find{it.id==e.fromAccount}
+    val catalog=s.categories.firstOrNull { it.kind==e.kind && it.name==e.category }
     KCard(modifier) {
         Row(verticalAlignment=Alignment.CenterVertically) {
             Box(Modifier.size(40.dp),contentAlignment=Alignment.Center) {
-                Icon(when(e.kind){Kind.TRANSFER->Icons.Default.SwapHoriz;Kind.BUY,Kind.SELL->Icons.Default.TrendingUp;
+                Icon(catalog?.let {walletCategoryIcon(it.iconKey)} ?: when(e.kind){
+                    Kind.TRANSFER->Icons.Default.SwapHoriz;Kind.BUY,Kind.SELL->Icons.Default.TrendingUp;
                     Kind.COUPON->Icons.Default.Payments;else->if(incoming)Icons.Default.ArrowDownward else Icons.Default.ArrowUpward},
-                    null,tint=if(incoming) Green else Accent)
+                    null,tint=catalog?.let {walletCategoryColor(it.colorHex)} ?: if(incoming) Green else Accent)
             }
             Column(Modifier.weight(1f)) {
                 Text(e.category.ifEmpty {if(incoming) "Доход" else "Расход"},fontWeight=FontWeight.Medium)
-                Text("${e.day} · ${account?.name?:"Счёт"}${if(e.note.isNotBlank()) " · ${e.note}" else ""}",
+                Text("${e.day} · ${account?.name?:"Счёт"}${if(e.note.isNotBlank()) " · ${e.note}" else ""}${if(e.tags.isNotEmpty()) " · ${e.tags.take(3).joinToString(" ") { "#$it" }}" else ""}",
                     color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodySmall,maxLines=2,overflow=TextOverflow.Ellipsis)
             }
             Column(horizontalAlignment=Alignment.End) {
@@ -240,6 +242,8 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
     var editedCategory by remember {mutableStateOf("")}
     var editedNote by remember {mutableStateOf("")}
     var editedDate by remember {mutableStateOf("")}
+    var editedTagIds by remember {mutableStateOf<List<Long>>(emptyList())}
+    var tagFilter by remember {mutableStateOf<Long?>(null)}
     var editError by remember {mutableStateOf<String?>(null)}
     var category by remember {mutableStateOf<String?>(null)}
     var search by remember { mutableStateOf("") }
@@ -265,7 +269,7 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
         selectedAccount.startsWith("BANK:") -> selectedAccount.removePrefix("BANK:")
         else -> s.accounts.find { "ACCOUNT:${it.id}"==selectedAccount }?.name ?: "Счета и карты"
     }}
-    val rows=remember(s.entries,s.accounts,filter,category,search,month,accountIds) {
+    val rows=remember(s.entries,s.accounts,s.tags,filter,category,tagFilter,search,month,accountIds) {
         val needle=search.trim()
         val accountNames=s.accounts.associate { it.id to it.name }
         s.entries.filter { e ->
@@ -275,7 +279,9 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
                 (filter=="ALL" || filter=="IN" && e.kind in listOf(Kind.INCOME,Kind.COUPON,Kind.SELL) ||
                     filter=="OUT" && e.kind in listOf(Kind.EXPENSE,Kind.BUY)) &&
                 (category==null || e.category==category) &&
+                (tagFilter==null || e.tags.any { tag -> s.tags.any { it.id==tagFilter && it.name==tag } }) &&
                 (needle.isEmpty() || e.category.contains(needle,ignoreCase=true) ||
+                    e.tags.any { it.contains(needle,ignoreCase=true) } ||
                     e.note.contains(needle,ignoreCase=true) ||
                     e.day.contains(needle,ignoreCase=true) ||
                     (accountNames[e.fromAccount]?.contains(needle,ignoreCase=true)==true))
@@ -355,6 +361,15 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
                     }
                 }
             }
+            if(s.tags.isNotEmpty()) item(key="history_tags") {
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement=Arrangement.spacedBy(7.dp)) {
+                    item { FilterChip(selected=tagFilter==null,onClick={tagFilter=null},label={Text("Все теги")}) }
+                    items(s.tags,key={it.id}) { tag ->
+                        FilterChip(selected=tagFilter==tag.id,onClick={tagFilter=if(tagFilter==tag.id)null else tag.id},
+                            label={Text("#${tag.name}")})
+                    }
+                }
+            }
             item(key="history_totals") {
                 val expense=rows.filter {it.kind==Kind.EXPENSE}.sumOf {it.baseMinor}
                 val income=rows.filter {it.kind==Kind.INCOME}.sumOf {it.baseMinor}
@@ -409,7 +424,8 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
                 }
                 item(key="entry_${e.id}") {
                     TransactionRow(e,s,Modifier.clickable {
-                        chosen=e;editing=false;editedCategory=e.category;editedNote=e.note;editedDate=e.day;editError=null
+                        chosen=e;editing=false;editedCategory=e.category;editedNote=e.note;editedDate=e.day
+                        editedTagIds=s.tags.filter { it.name in e.tags }.map { it.id };editError=null
                     })
                 }
             }
@@ -421,7 +437,8 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
         text={Text("${chosen?.day}\n${chosen?.note.orEmpty()}")},
         confirmButton={
             Row {
-                if(chosen?.kind in listOf(Kind.EXPENSE,Kind.INCOME)&&chosen?.sourceKey==null)
+                if(chosen?.kind in listOf(Kind.EXPENSE,Kind.INCOME) &&
+                    (chosen?.sourceKey==null || chosen?.sourceKey?.startsWith("bank:v1:")==true))
                     TextButton(onClick={editing=true}) {Text("Изменить")}
                 if(chosen?.kind in listOf(Kind.EXPENSE,Kind.INCOME,Kind.TRANSFER)&&chosen?.sourceKey==null)
                     TextButton(onClick={pendingDelete=chosen;chosen=null}) {Text("Удалить",color=MaterialTheme.colorScheme.error)}
@@ -435,12 +452,17 @@ fun HistoryTab(s:Snapshot,vm:KarmanViewModel,today:LocalDate,
         }},dismissButton={TextButton(onClick={pendingDelete=null}){Text("Отмена")}})
     if(chosen!=null && editing) ActionDialog("Изменить сведения",onClose={chosen=null;editing=false},submit={
         try {
-            vm.editEntryDetails(requireNotNull(chosen).id,editedCategory,editedNote,LocalDate.parse(editedDate))
+            vm.editEntryDetails(requireNotNull(chosen).id,editedCategory,editedNote,
+                LocalDate.parse(editedDate),editedTagIds)
             chosen=null;editing=false
         } catch(ex:Exception) {editError=ex.message?:"Ошибка"}
     }) {
         SimpleText("Категория",editedCategory,{editedCategory=it})
         SimpleText("Комментарий",editedNote,{editedNote=it})
+        Text("Теги",style=MaterialTheme.typography.labelLarge)
+        TagChipSelector(s.tags,editedTagIds) { id ->
+            editedTagIds=if(id in editedTagIds) editedTagIds-id else (editedTagIds+id).take(12)
+        }
         SimpleText("Дата (ГГГГ-ММ-ДД)",editedDate,{editedDate=it})
         if(editError!=null) Text(editError.orEmpty(),color=MaterialTheme.colorScheme.error)
     }
@@ -495,6 +517,9 @@ fun QuickEntrySheet(s:Snapshot,vm:KarmanViewModel,template:Template?,
         mutableStateOf(template?.category?:recentForKind?.category?:if(initialKind==Kind.INCOME)"Зарплата" else "Продукты")
     }
     var note by remember {mutableStateOf("")}
+    val selectedTagIds=remember(template?.id) {mutableStateListOf<Long>()}
+    var creatingCategory by remember {mutableStateOf(false)}
+    var creatingTag by remember {mutableStateOf(false)}
     var selectedDay by remember {mutableStateOf(LocalDate.now().toString())}
     var extra by remember {mutableStateOf(false)}
     var saveTemplate by remember {mutableStateOf(false)}
@@ -535,13 +560,31 @@ fun QuickEntrySheet(s:Snapshot,vm:KarmanViewModel,template:Template?,
                     AmountInput("Зачислится (необязательно)",toAmount,{toAmount=it})
             } else {
                 Text("Категория",color=MaterialTheme.colorScheme.onSurfaceVariant)
-                val all=(if(kind==Kind.EXPENSE) expenses else incomes)+
-                    s.entries.filter{it.kind==kind}.map{it.category}
+                val all=s.categories.filter {it.kind==kind}.map {it.name}
                 androidx.compose.foundation.layout.FlowRow(horizontalArrangement=Arrangement.spacedBy(7.dp),
                     verticalArrangement=Arrangement.spacedBy(0.dp)) {
                     all.distinct().forEach { name->
-                        FilterChip(selected=category==name,onClick={category=name},label={Text(name)})
+                        val definition=s.categories.firstOrNull {it.kind==kind && it.name==name}
+                        if(definition!=null) {
+                            FilterChip(selected=category==name,onClick={category=name},
+                                leadingIcon={Icon(walletCategoryIcon(definition.iconKey),null,
+                                    tint=walletCategoryColor(definition.colorHex),modifier=Modifier.size(16.dp))},
+                                label={Text(name)})
+                        } else FilterChip(selected=category==name,onClick={category=name},label={Text(name)})
                     }
+                }
+                TextButton(onClick={creatingCategory=true}) {
+                    Icon(Icons.Default.Add,null,modifier=Modifier.size(17.dp))
+                    Text("Новая категория")
+                }
+                Text("Теги",color=MaterialTheme.colorScheme.onSurfaceVariant)
+                TagChipSelector(s.tags,selectedTagIds) { id ->
+                    if(id in selectedTagIds) selectedTagIds.remove(id)
+                    else if(selectedTagIds.size<12) selectedTagIds.add(id)
+                }
+                TextButton(onClick={creatingTag=true}) {
+                    Icon(Icons.Default.Add,null,modifier=Modifier.size(17.dp))
+                    Text("Новый тег")
                 }
             }
             TextButton(onClick={extra=!extra}) {
@@ -575,7 +618,7 @@ fun QuickEntrySheet(s:Snapshot,vm:KarmanViewModel,template:Template?,
                         vm.transfer(accountId,toAccount,sum,toAmount.takeIf{it.isNotBlank()}?.let(Money::parse),date)
                     } else {
                         require(category.isNotBlank())
-                        vm.income(kind,accountId,sum,category,note,date)
+                        vm.income(kind,accountId,sum,category,note,date,selectedTagIds.toList())
                         if(saveTemplate) vm.addTemplate(templateName.ifBlank{category},kind,category,accountId,
                             if(noAmountTemplate)0 else sum)
                     }
@@ -584,4 +627,11 @@ fun QuickEntrySheet(s:Snapshot,vm:KarmanViewModel,template:Template?,
             })
         }
     }
+    if(creatingCategory) CategoryEditorDialog(original=null,kind=kind,
+        onDismiss={creatingCategory=false},onSave={name,color,icon->
+            vm.saveCategory(null,name,kind,color,icon)
+            category=name;creatingCategory=false
+        })
+    if(creatingTag) TagEditorDialog(original=null,onDismiss={creatingTag=false},
+        onSave={name,color->vm.saveTag(null,name,color);creatingTag=false})
 }

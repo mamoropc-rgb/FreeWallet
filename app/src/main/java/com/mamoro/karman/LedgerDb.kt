@@ -25,7 +25,7 @@ private fun Cursor.flag(k: String): Boolean = lng(k) == 1L
 private fun Cursor.nullLong(k: String): Long? = getColumnIndexOrThrow(k).let { i -> if(isNull(i)) null else getLong(i) }
 
 /** Brand-new schema: no old app database or package is accessed. */
-class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v1.db", null, 2) {
+class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v1.db", null, 3) {
     override fun onConfigure(db: SQLiteDatabase) { super.onConfigure(db); db.setForeignKeyConstraintsEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE accounts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, currency TEXT NOT NULL,
@@ -53,15 +53,45 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             day TEXT NOT NULL, amount_minor INTEGER NOT NULL, posted INTEGER NOT NULL DEFAULT 0,
             UNIQUE(bond_id, day))""")
         db.execSQL("CREATE TABLE preferences(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        createCategoryTagTables(db)
+        seedCategoryCatalog(db)
         db.insertOrThrow("accounts",null,values("name" to "Наличные", "currency" to "RUB",
             "opening_minor" to 0L, "opening_base_minor" to 0L, "rate_micros" to 1000000L, "included" to 1))
     }
+    private fun createCategoryTagTables(db:SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE categories(id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE, kind TEXT NOT NULL,
+            color_hex TEXT NOT NULL, icon_key TEXT NOT NULL,
+            UNIQUE(kind,name))""")
+        db.execSQL("""CREATE TABLE tags(id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE, color_hex TEXT NOT NULL)""")
+        db.execSQL("""CREATE TABLE entry_tags(entry_id INTEGER NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            PRIMARY KEY(entry_id,tag_id))""")
+        db.execSQL("CREATE INDEX idx_entry_tags_tag ON entry_tags(tag_id)")
+    }
+    private fun seedCategoryCatalog(db:SQLiteDatabase) {
+        val expense=listOf("Продукты" to "shopping","Транспорт" to "car","Дом" to "home",
+            "Здоровье" to "health","Кафе" to "food","Покупки" to "shopping",
+            "Связь" to "other","Платежи" to "work","Другое" to "other")
+        val income=listOf("Зарплата" to "work","Подработка" to "work",
+            "Подарки" to "gift","Возврат" to "other","Другое" to "other")
+        (expense.map { Triple(Kind.EXPENSE,it.first,it.second) } +
+            income.map { Triple(Kind.INCOME,it.first,it.second) }).forEach { (kind,name,icon) ->
+            db.insertWithOnConflict("categories",null,values("name" to name,"kind" to kind,
+                "color_hex" to "#A773FF","icon_key" to icon),SQLiteDatabase.CONFLICT_IGNORE)
+        }
+    }
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
-        if (old == 1 && new == 2) {
-            // Preserve all account IDs, balances, linked operations and investments.
+        require(old in 1..2 && new==3) { "Missing migration from $old to $new" }
+        if (old<2) {
             db.execSQL("ALTER TABLE accounts ADD COLUMN bank_group TEXT NOT NULL DEFAULT ''")
             db.execSQL("ALTER TABLE accounts ADD COLUMN card_last4 TEXT NOT NULL DEFAULT ''")
-        } else throw IllegalStateException("Missing migration from $old to $new")
+        }
+        if (old<3) {
+            createCategoryTagTables(db)
+            seedCategoryCatalog(db)
+        }
     }
     fun snapshot(): Snapshot {
         val db = readableDatabase
@@ -87,6 +117,10 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             bankImportEnabled=bool("bankImportEnabled"),
             bankImportAccountId=prefs["bankImportAccountId"]?.toLongOrNull()?.takeIf { it > 0 } ?: 0L
         )
+        val tagAssignments = read("""SELECT et.entry_id AS eid,t.name AS tag_name
+            FROM entry_tags et JOIN tags t ON t.id=et.tag_id ORDER BY et.entry_id,t.name""") {
+            it.lng("eid") to it.str("tag_name")
+        }.groupBy({it.first},{it.second})
         return Snapshot(
             accounts=read("SELECT * FROM accounts ORDER BY id") { Account(it.lng("id"),it.str("name"),it.str("currency"),
                 it.lng("opening_minor"),it.lng("opening_base_minor"),it.lng("rate_micros"),it.flag("included"),
@@ -94,7 +128,8 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             entries=read("SELECT * FROM entries ORDER BY day DESC,id DESC") { Entry(it.lng("id"),it.str("day"),it.str("kind"),
                 it.lng("from_account"),it.lng("amount_minor"),it.lng("base_minor"),it.str("category"),
                 it.str("note"),it.nullLong("to_account"),it.nullLong("to_amount_minor"),
-                it.getString(it.getColumnIndexOrThrow("source_key"))) },
+                it.getString(it.getColumnIndexOrThrow("source_key")),
+                tagAssignments[it.lng("id")].orEmpty()) },
             goals=read("SELECT * FROM goals ORDER BY id") { Goal(it.lng("id"),it.str("title"),it.lng("target_minor"),it.lng("saved_minor"),it.flag("reserve")) },
             plans=read("SELECT * FROM plans ORDER BY due,id") { Plan(it.lng("id"),it.str("title"),it.lng("amount_minor"),
                 it.lng("account_id"),it.str("due"),it.str("frequency"),it.flag("auto"),it.flag("reserve"),it.lng("anchor_day").toInt()) },
@@ -105,7 +140,12 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
                 it.lng("quote_minor"),it.lng("coupon_bps").toInt(),it.lng("account_id")) },
             lots=read("SELECT * FROM lots ORDER BY day,id") { Lot(it.lng("id"),it.lng("bond_id"),it.lng("quantity"),it.lng("cost_minor"),it.str("day")) },
             coupons=read("SELECT * FROM coupons ORDER BY day,id") { Coupon(it.lng("id"),it.lng("bond_id"),it.str("day"),it.lng("amount_minor"),it.flag("posted")) },
-            settings=settings
+            settings=settings,
+            categories=read("SELECT * FROM categories ORDER BY kind,name") {
+                WalletCategory(it.lng("id"),it.str("name"),it.str("kind"),
+                    it.str("color_hex"),it.str("icon_key")) },
+            tags=read("SELECT * FROM tags ORDER BY name") {
+                WalletTag(it.lng("id"),it.str("name"),it.str("color_hex")) }
         )
     }
     private inline fun <T> mutation(block:(SQLiteDatabase)->T):T {
@@ -164,20 +204,82 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         }
         require(db.delete("accounts","id=?",arrayOf(id.toString()))==1) { "Счёт не найден" }
     }
+    fun saveCategory(id:Long?,name:String,kind:String,colorHex:String,iconKey:String):Long=mutation { db ->
+        val clean=CategoryTagRules.name(name)
+        val type=CategoryTagRules.categoryKind(kind)
+        val color=CategoryTagRules.color(colorHex)
+        val icon=CategoryTagRules.icon(iconKey)
+        if(id==null) {
+            db.insertOrThrow("categories",null,values("name" to clean,"kind" to type,
+                "color_hex" to color,"icon_key" to icon))
+        } else {
+            val previous=snapshot().categories.firstOrNull { it.id==id } ?: error("Категория не найдена")
+            require(previous.kind==type) {"Для уже созданной категории нельзя менять тип доход/расход"}
+            require(db.update("categories",values("name" to clean,"color_hex" to color,
+                "icon_key" to icon),"id=?",arrayOf(id.toString()))==1)
+            if(previous.name!=clean) {
+                // A rename keeps history, templates and category-based budget sums aligned.
+                db.update("entries",values("category" to clean),"kind=? AND category=?",
+                    arrayOf(type,previous.name))
+                if(type==Kind.EXPENSE) db.update("budgets",values("category" to clean),
+                    "category=?",arrayOf(previous.name))
+                db.update("templates",values("category" to clean),"kind=? AND category=?",
+                    arrayOf(type,previous.name))
+            }
+            id
+        }
+    }
+    fun deleteCategory(id:Long)=mutation { db ->
+        // Historic operations keep their category labels and remain in analytics.
+        require(db.delete("categories","id=?",arrayOf(id.toString()))==1) {"Категория не найдена"}
+    }
+    fun saveTag(id:Long?,name:String,colorHex:String):Long=mutation { db ->
+        val clean=CategoryTagRules.name(name)
+        val color=CategoryTagRules.color(colorHex)
+        if(id==null) db.insertOrThrow("tags",null,values("name" to clean,"color_hex" to color))
+        else {
+            require(db.update("tags",values("name" to clean,"color_hex" to color),
+                "id=?",arrayOf(id.toString()))==1) {"Тег не найден"}
+            id
+        }
+    }
+    fun deleteTag(id:Long)=mutation { db ->
+        // ON DELETE CASCADE removes only the tag associations, not transactions.
+        require(db.delete("tags","id=?",arrayOf(id.toString()))==1) {"Тег не найден"}
+    }
+    private fun assignTags(db:SQLiteDatabase,entryId:Long,ids:List<Long>) {
+        val unique=CategoryTagRules.tagIds(ids)
+        require(db.rawQuery("SELECT 1 FROM entries WHERE id=?",arrayOf(entryId.toString()))
+            .use {it.moveToFirst()}) {"Операция не найдена"}
+        if(unique.isNotEmpty()) {
+            val available=mutableSetOf<Long>()
+            db.rawQuery("SELECT id FROM tags",null).use { c -> while(c.moveToNext()) available.add(c.getLong(0)) }
+            require(unique.all { it in available }) {"Некоторые теги не найдены"}
+        }
+        db.delete("entry_tags","entry_id=?",arrayOf(entryId.toString()))
+        unique.forEach { tagId -> db.insertOrThrow("entry_tags",null,
+            values("entry_id" to entryId,"tag_id" to tagId)) }
+    }
+    fun setEntryTags(entryId:Long,ids:List<Long>)=mutation { db -> assignTags(db,entryId,ids) }
+
     fun entry(kind:String,accountId:Long,amount:Long,category:String,note:String="",
-        date:LocalDate=LocalDate.now(),toId:Long?=null,toAmount:Long?=null):Long=mutation { db ->
+        date:LocalDate=LocalDate.now(),toId:Long?=null,toAmount:Long?=null,
+        tagIds:List<Long> = emptyList()):Long=mutation { db ->
         require(kind in listOf(Kind.INCOME,Kind.EXPENSE,Kind.TRANSFER))
         val current=snapshot()
         val accounts=current.accounts
         val a=accounts.first { it.id==accountId }
         val currentSettings=current.settings
         val base=FxRates.toBase(currentSettings,a.currency,amount)
-        if(kind==Kind.TRANSFER) {
+        val entryId=if(kind==Kind.TRANSFER) {
+            require(tagIds.isEmpty()) {"Теги назначаются только доходам и расходам"}
             val dest=accounts.first{it.id==toId};require(dest.id!=accountId)
             val credit=toAmount?:FxRates.fromBase(currentSettings,dest.currency,base)
             require(credit in 1..Money.MAX_MINOR)
             insertEntry(db,kind,accountId,amount,base,"Перевод",note,date.toString(),toId,credit)
         } else insertEntry(db,kind,accountId,amount,base,category,note,date.toString())
+        if(tagIds.isNotEmpty()) assignTags(db,entryId,tagIds)
+        entryId
     }
     /** Import parsed purchases only after explicit opt-in and RUB account selection.
      * No notification text, additional rewards, or financial identifiers are stored.
@@ -215,12 +317,14 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         inserted
     }
 
-    fun editEntryDetails(id:Long,category:String,note:String,day:LocalDate)=mutation { db ->
+    fun editEntryDetails(id:Long,category:String,note:String,day:LocalDate,
+        tagIds:List<Long>?=null)=mutation { db ->
         val e=snapshot().entries.first{it.id==id}
         require(e.kind in listOf(Kind.EXPENSE,Kind.INCOME) &&
             (e.sourceKey==null || e.sourceKey.startsWith("bank:v1:")))
         require(category.isNotBlank() && category.length<=80 && note.length<=500)
         db.update("entries",values("category" to category,"note" to note,"day" to day.toString()),"id=?",arrayOf(id.toString()))
+        if(tagIds!=null) assignTags(db,id,tagIds)
     }
     fun deleteEntry(id:Long)=mutation { db ->
         val e=snapshot().entries.first {it.id==id}
@@ -388,10 +492,15 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             runCatching{LocalDate.parse(it.day)}.isSuccess})
         require(s.templates.all{it.accountId in accIds&&it.kind in listOf(Kind.EXPENSE,Kind.INCOME)&&
             it.amountMinor in 0..Money.MAX_MINOR})
+        require(s.categories.all { it.name.isNotBlank() && it.kind in listOf(Kind.EXPENSE,Kind.INCOME) &&
+            runCatching { CategoryTagRules.color(it.colorHex) }.isSuccess &&
+                runCatching { CategoryTagRules.icon(it.iconKey) }.isSuccess })
+        require(s.tags.all { it.name.isNotBlank() && runCatching {CategoryTagRules.color(it.colorHex)}.isSuccess })
+        require(s.entries.all { it.tags.size<=12 && it.tags.all { tag -> s.tags.any { def->def.name==tag } } })
         s.accounts.forEach{LedgerMath.accountBase(it,s.entries);LedgerMath.accountLocal(it,s.entries)}
         s.bonds.forEach{LedgerMath.bondMarketValue(s,it)}
     }
-    private val backupTables=listOf("accounts","entries","goals","plans","budgets","templates","bonds","lots","coupons","preferences")
+    private val backupTables=listOf("accounts","entries","goals","plans","budgets","templates","bonds","lots","coupons","preferences","categories","tags","entry_tags")
     fun exportJson():String {
         val result=JSONObject().put("format","karman-v1").put("schema",1)
         val db=readableDatabase
@@ -428,12 +537,20 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             "bonds" to setOf("id","name","nominal_minor","quote_minor","coupon_bps","account_id"),
             "lots" to setOf("id","bond_id","quantity","cost_minor","day"),
             "coupons" to setOf("id","bond_id","day","amount_minor","posted"),
-            "preferences" to setOf("key","value")
+            "preferences" to setOf("key","value"),
+            "categories" to setOf("id","name","kind","color_hex","icon_key"),
+            "tags" to setOf("id","name","color_hex"),
+            "entry_tags" to setOf("entry_id","tag_id")
         )
-        backupTables.forEach { name -> require(root.has(name)&&root.getJSONArray(name).length()<=100000) }
+        val optionalTables=setOf("categories","tags","entry_tags")
+        backupTables.forEach { name ->
+            require((root.has(name) || name in optionalTables) &&
+                (!root.has(name) || root.getJSONArray(name).length()<=100000))
+        }
         mutation { db ->
             backupTables.asReversed().forEach { db.delete(it,null,null) }
             for(name in backupTables) {
+                if(!root.has(name)) continue // Backward-compatible 1.0.6 backup
                 val a=root.getJSONArray(name)
                 for(i in 0 until a.length()) {
                     val o=a.getJSONObject(i); val cv=ContentValues()
@@ -451,6 +568,7 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
                     db.insertOrThrow(name,null,cv)
                 }
             }
+            if(!root.has("categories")) seedCategoryCatalog(db)
             validateImportedData(snapshot())
         }
     }

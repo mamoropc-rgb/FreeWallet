@@ -34,11 +34,19 @@ class KarmanViewModel(app: Application): AndroidViewModel(app) {
     fun refreshScheduled()=execute{database.processAutoPlans()}
     fun refreshFromBankImport()=execute { /* Reload the latest SQLite snapshot. */ }
     fun dismissIssue(){ _issue.value=null }
-    fun income(kind:String,accountId:Long,amount:Long,category:String,note:String,day:LocalDate=LocalDate.now()) =
-        execute { database.entry(kind,accountId,amount,category,note,day) }
+    fun income(kind:String,accountId:Long,amount:Long,category:String,note:String,
+        day:LocalDate=LocalDate.now(), tagIds:List<Long> = emptyList()) =
+        execute { database.entry(kind,accountId,amount,category,note,day,tagIds=tagIds) }
     fun transfer(from:Long,to:Long,amount:Long,toAmount:Long?,date:LocalDate=LocalDate.now()) =
         execute { database.entry(Kind.TRANSFER,from,amount,"Перевод",date=date,toId=to,toAmount=toAmount) }
-    fun editEntryDetails(id:Long,category:String,note:String,day:LocalDate)=execute{database.editEntryDetails(id,category,note,day)}
+    fun editEntryDetails(id:Long,category:String,note:String,day:LocalDate,
+        tagIds:List<Long>?=null)=execute{database.editEntryDetails(id,category,note,day,tagIds)}
+    fun saveCategory(id:Long?,name:String,kind:String,colorHex:String,iconKey:String)=
+        execute { database.saveCategory(id,name,kind,colorHex,iconKey) }
+    fun deleteCategory(id:Long)=execute { database.deleteCategory(id) }
+    fun saveTag(id:Long?,name:String,colorHex:String)=
+        execute { database.saveTag(id,name,colorHex) }
+    fun deleteTag(id:Long)=execute { database.deleteTag(id) }
     fun deleteEntry(id:Long) = execute { database.deleteEntry(id) }
     fun createAccount(name:String,currency:String,opening:Long,bankGroup:String="",last4:String="") =
         execute { database.account(name,currency,opening,bankGroup,last4) }

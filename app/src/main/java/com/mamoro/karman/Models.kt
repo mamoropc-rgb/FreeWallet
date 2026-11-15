@@ -12,12 +12,16 @@ data class Entry(
     val id: Long, val day: String, val kind: String, val fromAccount: Long,
     val amountMinor: Long, val baseMinor: Long, val category: String,
     val note: String = "", val toAccount: Long? = null,
-    val toAmountMinor: Long? = null, val sourceKey: String? = null
+    val toAmountMinor: Long? = null, val sourceKey: String? = null,
+    val tags: List<String> = emptyList()
 )
 
 data class Goal(val id: Long, val title: String, val targetMinor: Long, val savedMinor: Long, val reserve: Boolean)
 data class Plan(val id: Long, val title: String, val amountMinor: Long, val accountId: Long,
     val due: String, val frequency: String, val auto: Boolean, val reserve: Boolean, val anchorDay: Int)
+data class WalletCategory(val id: Long, val name: String, val kind: String,
+    val colorHex: String = "#A773FF", val iconKey: String = "other")
+data class WalletTag(val id: Long, val name: String, val colorHex: String = "#A773FF")
 data class Budget(val id: Long, val category: String, val monthlyLimitMinor: Long)
 data class Template(val id: Long, val title: String, val kind: String, val category: String,
     val accountId: Long, val amountMinor: Long)
@@ -42,7 +46,9 @@ data class Snapshot(
     val goals: List<Goal> = emptyList(), val plans: List<Plan> = emptyList(),
     val templates: List<Template> = emptyList(), val budgets: List<Budget> = emptyList(), val bonds: List<Bond> = emptyList(),
     val lots: List<Lot> = emptyList(), val coupons: List<Coupon> = emptyList(),
-    val settings: Settings = Settings()
+    val settings: Settings = Settings(),
+    val categories: List<WalletCategory> = emptyList(),
+    val tags: List<WalletTag> = emptyList()
 )
 object Kind {
     const val EXPENSE = "EXPENSE"

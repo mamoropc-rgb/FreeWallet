@@ -32,6 +32,7 @@ private fun currencyToBaseMicro(price:String):Long {
 @Composable
 fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
     var dialog by remember {mutableStateOf("")}
+    var showTaxonomy by remember {mutableStateOf(false)}
     var amount by remember {mutableStateOf("")}
     var name by remember {mutableStateOf("")}
     var category by remember {mutableStateOf("Продукты")}
@@ -64,6 +65,10 @@ fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
         }
     }
     fun start(d:String,value:String="") {dialog=d;amount=value;error=null}
+    if(showTaxonomy) {
+        CategoryTagManager(s,vm,onBack={showTaxonomy=false})
+        return
+    }
     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(start=18.dp,end=18.dp,top=8.dp,bottom=30.dp),
         verticalArrangement=Arrangement.spacedBy(12.dp)) {
         item {TitleBar("Ещё","Настройки и данные")}
@@ -97,6 +102,19 @@ fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
                 Text("Изменения применяются без перезапуска и сохраняются в резервной копии.",
                     style=MaterialTheme.typography.labelSmall,
                     color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        item {
+            KCard {
+                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Категории и теги",fontWeight=FontWeight.SemiBold)
+                        Text("Создание, переименование, иконки, цвета и удаление",
+                            color=MaterialTheme.colorScheme.onSurfaceVariant,
+                            style=MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick={showTaxonomy=true}) { Text("Открыть") }
+                }
             }
         }
         item { BankImportSettingsCard(s, vm) }
