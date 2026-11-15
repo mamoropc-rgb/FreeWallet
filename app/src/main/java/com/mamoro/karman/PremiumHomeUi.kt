@@ -1,6 +1,8 @@
 package com.mamoro.karman
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,6 +20,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.animation.core.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -28,6 +34,116 @@ private val Violet = Color(0xFF8C4DFF)
 private val SoftViolet = Color(0xFFA46BFF)
 private val Mint = Color(0xFF48DBAB)
 
+/** Static app backdrop; static drawing keeps tab switching cheap on AMOLED displays. */
+@Composable
+fun PremiumAppBackground(modifier: Modifier = Modifier) {
+    val dark = MaterialTheme.colorScheme.background == Color(0xFF080C1C)
+    val quality = LocalPremiumGraphics.current
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val base = if (dark) listOf(Color(0xFF090B1E), Color(0xFF12132C), Color(0xFF080B1D))
+                   else listOf(Color(0xFFF5F2FF), Color(0xFFECE8FD), Color(0xFFF8F5FF))
+        drawRect(Brush.verticalGradient(base))
+        if (quality != "FAST") {
+            val top = Offset(w * .98f, h * .08f)
+            drawCircle(
+                Brush.radialGradient(listOf(
+                    if (dark) Color(0xFF7242E2).copy(alpha=.18f) else Color(0xFFBA98FF).copy(alpha=.26f),
+                    Color.Transparent), center=top, radius=w * 1.15f),
+                radius=w * 1.15f, center=top)
+            if (quality == "MAX") {
+                val bottom = Offset(w * .08f, h * .72f)
+                drawCircle(Brush.radialGradient(listOf(
+                    if (dark) Color(0xFF6C3ACB).copy(alpha=.11f) else Color(0xFFBDA7FF).copy(alpha=.19f),
+                    Color.Transparent), center=bottom, radius=w * 1.08f),
+                    radius=w * 1.08f, center=bottom)
+            }
+        }
+    }
+}
+
+/** Soft bloom, diagonal glass ribbons and moving light remain BELOW text and hit targets. */
+@Composable
+private fun IncomeGlassLights(dark: Boolean, quality: String, modifier: Modifier = Modifier) {
+    val profile = remember(quality) { GlassFxPolicy.forMode(quality) }
+    // Animation state is read only by Canvas.draw, not by the card's text/layout.
+    val shimmer = if (profile.animatedShimmer) {
+        val transition = rememberInfiniteTransition(label = "income-glass-light")
+        transition.animateFloat(
+            initialValue = 0.06f, targetValue = 0.94f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(profile.shimmerDurationMillis, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse), label = "glass-shimmer-position")
+    } else null
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        drawRect(Brush.linearGradient(
+            if (dark) listOf(Color(0xFF462366), Color(0xFF311F5B), Color(0xFF191631))
+            else listOf(Color(0xFFE1D2FF), Color(0xFFEBDEFF), Color(0xFFF4E9FF)),
+            start=Offset(0f, 0f),end=Offset(w, h)))
+
+        // Wide diagonal translucent ornaments match the original render.
+        val leftRibbon = Path().apply {
+            moveTo(-w * .13f, h * .02f)
+            lineTo(w * .44f, 0f)
+            lineTo(w * .98f, h * .67f)
+            lineTo(w * .60f, h * .60f)
+            close()
+        }
+        drawPath(leftRibbon, Brush.linearGradient(listOf(
+            if (dark) Color(0xFFD9A5FF).copy(alpha=.12f) else Color.White.copy(alpha=.30f),
+            Color.Transparent),start=Offset(0f,0f),end=Offset(w,h)))
+        val rightRibbon = Path().apply {
+            moveTo(w * .78f, -h * .16f)
+            lineTo(w * 1.12f, h * .20f)
+            lineTo(w * .93f, h * .84f)
+            lineTo(w * .70f, h * .15f)
+            close()
+        }
+        drawPath(rightRibbon, Brush.linearGradient(listOf(
+            Color.White.copy(alpha=if(dark) .06f else .21f), Color.Transparent),
+            start=Offset(w * .6f,0f),end=Offset(w,h)))
+
+        // MAX: two soft moving blooms; BALANCED: one less frequent bloom; FAST: no animation.
+        if (profile.glowLayers > 0) {
+            val phase = shimmer?.value ?: .45f
+            val position = Offset(w * (.10f + phase * .76f), h * .18f)
+            drawCircle(
+                brush=Brush.radialGradient(listOf(
+                    if (dark) Color(0xFFC66AFF).copy(alpha=.35f)
+                    else Color(0xFFBD70FF).copy(alpha=.24f),
+                    if(dark) Color(0xFF9E4CF6).copy(alpha=.12f) else Color(0xFFEAD3FF).copy(alpha=.12f),
+                    Color.Transparent), center=position, radius=w * .66f),
+                radius=w * .66f, center=position)
+            if (profile.glowLayers > 1) {
+                val secondary = Offset(w * (1.0f - phase * .42f), h * .86f)
+                drawCircle(Brush.radialGradient(listOf(
+                    Color(0xFFB55EFF).copy(alpha=if(dark) .18f else .13f),
+                    Color.Transparent), center=secondary,radius=w * .43f),
+                    center=secondary,radius=w * .43f)
+                rotate(-23f, pivot=Offset(w *.5f,h *.5f)) {
+                    drawRect(
+                        brush=Brush.horizontalGradient(listOf(
+                            Color.Transparent,
+                            Color.White.copy(alpha=if(dark) .07f else .12f),
+                            Color.Transparent),
+                            startX=w * phase - w * .18f, endX=w * phase + w * .30f),
+                        topLeft=Offset(0f, 0f), size=size)
+                }
+            }
+        } else {
+            // Keep a static highlight even in performance mode.
+            val staticSpot = Offset(w * .34f, h * .05f)
+            drawCircle(Brush.radialGradient(listOf(
+                if(dark) Color(0xFFB976FF).copy(alpha=.10f)
+                else Color.White.copy(alpha=.28f),Color.Transparent),
+                center=staticSpot,radius=w * .60f),center=staticSpot,radius=w * .60f)
+        }
+    }
+}
+
 /** Decoration and animations are selected in Settings: MAX, BALANCED or FAST. */
 @Composable
 fun PremiumGlassPanel(
@@ -35,25 +151,35 @@ fun PremiumGlassPanel(
     prominent: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val c = MaterialTheme.colorScheme
-    val dark = c.background == Color(0xFF080C1C)
+    val colors = MaterialTheme.colorScheme
+    val dark = colors.background == Color(0xFF080C1C)
     val quality = LocalPremiumGraphics.current
+    val profile = remember(quality) { GlassFxPolicy.forMode(quality) }
     val corners = RoundedCornerShape(22.dp)
-    val start = if (dark) (if (prominent) Color(0xFF33205A) else Color(0xFF202844))
-                else (if (prominent) Color(0xFFE5D8FF) else Color(0xFFF5F5FF))
-    val end = if (dark) (if (prominent) Color(0xFF1A1536) else Color(0xFF151A30))
-              else (if (prominent) Color(0xFFF2EAFF) else Color(0xFFE9E8FE))
-    val surface = if (quality == "FAST") Modifier.background(c.surface, corners)
-                  else Modifier.background(Brush.linearGradient(listOf(start, end)), corners)
-    Column(
-        modifier = modifier
-            .then(if (quality == "MAX") Modifier.shadow(12.dp, corners, ambientColor = Violet.copy(alpha=.25f)) else Modifier)
-            .then(surface)
-            .clip(corners)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        content = content
-    )
+    val panelGradient = if (dark)
+        listOf(Color(0xFF242944), Color(0xFF181A31), Color(0xFF15172D))
+    else listOf(Color(0xFFFCFAFF), Color(0xFFF1EDFF), Color(0xFFECE7FD))
+    val stroke = Brush.linearGradient(if (dark)
+        listOf(Color(0xFFD9ABFF).copy(alpha=if(prominent) .72f else .22f),
+            Color(0xFFBBA4FF).copy(alpha=.10f), Color(0xFFC46CFF).copy(alpha=if(prominent) .47f else .14f))
+        else listOf(Color.White.copy(alpha=.97f),Color(0xFFE4D7FF).copy(alpha=.30f),
+            Color(0xFFB798EC).copy(alpha=if(prominent) .63f else .30f)))
+    Box(modifier
+        .then(if(profile.elevationDp > 0) Modifier.shadow(
+            profile.elevationDp.dp, corners,
+            ambientColor=Violet.copy(alpha=.36f),spotColor=Violet.copy(alpha=.32f)) else Modifier)
+        .clip(corners)
+        .background(if(quality == "FAST") colors.surface else Color.Transparent)
+        .border(1.dp, stroke, corners)) {
+        if (prominent) {
+            IncomeGlassLights(dark,quality,Modifier.matchParentSize())
+        } else if (quality != "FAST") {
+            Box(Modifier.matchParentSize().background(
+                Brush.linearGradient(panelGradient)))
+        }
+        Column(Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement=Arrangement.spacedBy(6.dp),content=content)
+    }
 }
 
 @Composable

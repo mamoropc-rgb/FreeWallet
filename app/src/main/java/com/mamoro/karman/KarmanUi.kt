@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
+import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
@@ -120,11 +121,14 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
             else -> Unit // Never exit when already on root.
         }
     }
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    PremiumAppBackground(Modifier.matchParentSize())
     Scaffold(
-        containerColor=MaterialTheme.colorScheme.background,
+        containerColor=Color.Transparent,
         snackbarHost={SnackbarHost(snackbar)},
         floatingActionButton={
-            if(pager.currentPage in 0..2) FloatingActionButton(
+            // Home already has four prominent actions; avoid covering the Goals card.
+            if(pager.currentPage in 1..2) FloatingActionButton(
                 onClick={quick=null;quickKind=Kind.EXPENSE;showQuick=true},
                 containerColor=MaterialTheme.colorScheme.primary, contentColor=MaterialTheme.colorScheme.onPrimary,
                 shape=RoundedCornerShape(18.dp)) {Icon(Icons.Default.Add,"Новая операция")}
@@ -159,6 +163,7 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
         }
     }
     if(showQuick) QuickEntrySheet(s,vm,quick,defaultKind=quickKind,onClose={showQuick=false;quick=null})
+    }
 }
 
 @Composable

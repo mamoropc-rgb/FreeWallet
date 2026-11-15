@@ -100,7 +100,7 @@ object LedgerMath {
         val due = s.plans.filter { it.reserve && it.accountId in includedIds && !LocalDate.parse(it.due).isAfter(today.plusMonths(1)) }
             .sumOf { plan ->
                 s.accounts.firstOrNull { it.id == plan.accountId }
-                    ?.let { Money.toBase(plan.amountMinor, it.rateMicros) } ?: 0L
+                    ?.let { FxRates.toBase(s.settings,it.currency,plan.amountMinor) } ?: 0L
             }
         val alreadyCovered = s.settings.coveredPlansMinor.coerceIn(0, minOf(due, distinctReserve))
         return cashBase(s) - distinctReserve - (due - alreadyCovered)

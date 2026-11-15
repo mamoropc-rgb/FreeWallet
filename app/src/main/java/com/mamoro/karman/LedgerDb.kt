@@ -116,31 +116,51 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             "amount_minor" to local,"base_minor" to base,"category" to category,"note" to note,
             "to_account" to destination,"to_amount_minor" to credited,"source_key" to source))
     }
-    fun account(name:String,currency:String,opening:Long,rateMicros:Long):Long=mutation { db ->
+    fun account(name:String,currency:String,opening:Long):Long=mutation { db ->
         require(name.isNotBlank()&&name.length<=80&&currency in listOf("RUB","USD","EUR","BYN"))
-        require(opening in 0..Money.MAX_MINOR && rateMicros in 1..100000000000L)
-        require(currency!="RUB"||rateMicros==1000000L)
+        require(opening in 0..Money.MAX_MINOR)
+        val rate = FxRates.basePerNativeMicros(snapshot().settings, currency)
         db.insertOrThrow("accounts",null,values("name" to name,"currency" to currency,"opening_minor" to opening,
-            "opening_base_minor" to Money.toBase(opening,rateMicros),"rate_micros" to rateMicros,"included" to 1))
+            "opening_base_minor" to Money.toBase(opening,rate),"rate_micros" to rate,"included" to 1))
     }
     fun includeAccount(id:Long,include:Boolean)=mutation { db ->
         require(db.update("accounts",values("included" to include),"id=?",arrayOf(id.toString()))==1)
     }
-    fun updateAccountRate(id:Long,rate:Long)=mutation { db ->
-        require(rate in 1..100000000000L)
-        val a=snapshot().accounts.first{it.id==id};require(a.currency!="RUB"||rate==1000000L)
-        // Past entries and openingBaseMinor remain untouched.
-        db.update("accounts",values("rate_micros" to rate),"id=?",arrayOf(id.toString()))
+    fun editAccount(id:Long,name:String,currency:String,opening:Long) = mutation { db ->
+        val s=snapshot()
+        val old=s.accounts.firstOrNull { it.id==id } ?: error("Счёт не найден")
+        require(name.isNotBlank() && name.length<=80 && currency in listOf("RUB","USD","EUR","BYN"))
+        require(opening in 0..Money.MAX_MINOR)
+        if (AccountRules.hasLinkedData(s,id)) {
+            require(currency==old.currency && opening==old.openingMinor) {
+                "Счёт связан с операциями, планами или инвестициями: можно изменить только название"
+            }
+        }
+        val rate=if (currency==old.currency && opening==old.openingMinor) old.rateMicros
+                 else FxRates.basePerNativeMicros(s.settings,currency)
+        require(db.update("accounts",values("name" to name,"currency" to currency,
+            "opening_minor" to opening,"opening_base_minor" to
+                if (currency==old.currency && opening==old.openingMinor) old.openingBaseMinor else Money.toBase(opening,rate),
+            "rate_micros" to rate),"id=?",arrayOf(id.toString()))==1)
+    }
+    fun deleteAccount(id:Long) = mutation { db ->
+        val s=snapshot()
+        require(AccountRules.canDelete(s,id)) {
+            "Нельзя удалить последний счёт или счёт с операциями, планами, шаблонами или инвестициями"
+        }
+        require(db.delete("accounts","id=?",arrayOf(id.toString()))==1) { "Счёт не найден" }
     }
     fun entry(kind:String,accountId:Long,amount:Long,category:String,note:String="",
         date:LocalDate=LocalDate.now(),toId:Long?=null,toAmount:Long?=null):Long=mutation { db ->
         require(kind in listOf(Kind.INCOME,Kind.EXPENSE,Kind.TRANSFER))
-        val accounts=snapshot().accounts
+        val current=snapshot()
+        val accounts=current.accounts
         val a=accounts.first { it.id==accountId }
-        val base=Money.toBase(amount,a.rateMicros)
+        val currentSettings=current.settings
+        val base=FxRates.toBase(currentSettings,a.currency,amount)
         if(kind==Kind.TRANSFER) {
             val dest=accounts.first{it.id==toId};require(dest.id!=accountId)
-            val credit=toAmount?:Money.nativeFromBase(base,dest.rateMicros)
+            val credit=toAmount?:FxRates.fromBase(currentSettings,dest.currency,base)
             require(credit in 1..Money.MAX_MINOR)
             insertEntry(db,kind,accountId,amount,base,"Перевод",note,date.toString(),toId,credit)
         } else insertEntry(db,kind,accountId,amount,base,category,note,date.toString())
@@ -172,14 +192,15 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             "due" to due.toString(),"frequency" to frequency,"auto" to auto,"reserve" to reserve,"anchor_day" to due.dayOfMonth))
     }
     fun postPlan(id:Long,today:LocalDate=LocalDate.now()):Boolean=mutation { db ->
-        val plan=snapshot().plans.first{it.id==id}
+        val current=snapshot()
+        val plan=current.plans.first{it.id==id}
         val due=LocalDate.parse(plan.due)
         require(!due.isAfter(today))
-        val account=snapshot().accounts.first { it.id==plan.accountId }
+        val account=current.accounts.first { it.id==plan.accountId }
         val key="plan:$id:$due"
         if(db.rawQuery("SELECT 1 FROM entries WHERE source_key=?",arrayOf(key)).use{it.moveToFirst()}) false
         else {
-            insertEntry(db,Kind.EXPENSE,plan.accountId,plan.amountMinor,Money.toBase(plan.amountMinor,account.rateMicros),
+            insertEntry(db,Kind.EXPENSE,plan.accountId,plan.amountMinor,FxRates.toBase(current.settings,account.currency,plan.amountMinor),
                 "Платежи",plan.title,due.toString(),source=key)
             if(plan.frequency=="ONCE") db.update("plans",values("auto" to false,"reserve" to false),"id=?",arrayOf(id.toString()))
             else db.update("plans",values("due" to LedgerMath.nextDate(due,plan.frequency,plan.anchorDay).toString()),"id=?",arrayOf(id.toString()))
@@ -267,6 +288,10 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         if (key=="nextIncomeDate") LocalDate.parse(value)
         if (key=="themeMode") require(value in setOf("DARK","LIGHT","SYSTEM"))
         if (key=="graphicsMode") require(value in setOf("MAX","BALANCED","FAST"))
+        if (key in setOf("usdPerBaseMicros","eurPerBaseMicros","bynPerBaseMicros")) {
+            val normalized=value.toLongOrNull() ?: error("Некорректный курс")
+            require(normalized in 10L..1_000_000_000_000L) { "Некорректный курс" }
+        }
         db.insertWithOnConflict("preferences",null,values("key" to key,"value" to value),SQLiteDatabase.CONFLICT_REPLACE)
     }
     private fun validateImportedData(s:Snapshot) {

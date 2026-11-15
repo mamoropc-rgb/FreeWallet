@@ -81,9 +81,9 @@ fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
                 Spacer(Modifier.height(10.dp))
                 Text("Графика и производительность",style=MaterialTheme.typography.labelLarge)
                 listOf(
-                    Triple("MAX","Максимальная графика","Полные градиенты, тени и декоративные эффекты"),
-                    Triple("BALANCED","Сбалансированный","Градиенты без тяжёлых эффектов"),
-                    Triple("FAST","Максимальная производительность","Упрощённые поверхности без сложных эффектов")
+                    Triple("MAX","Максимальная графика","Анимированные переливы, мягкое свечение и декоративное стекло"),
+                    Triple("BALANCED","Сбалансированный","Медленное переливание и один мягкий блик"),
+                    Triple("FAST","Максимальная производительность","Статичные градиенты и декоративные формы, без непрерывной анимации")
                 ).forEach { (key,title,description) ->
                     Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()) {
                         RadioButton(selected=s.settings.graphicsMode==key,onClick={vm.pref("graphicsMode",key)})
@@ -177,7 +177,7 @@ fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
         }
         item {
             KCard {
-                Text("Карман · версия 1.0.2 · Premium Glass",fontWeight=FontWeight.SemiBold)
+                Text("Карман · версия 1.0.3 · Premium Glass",fontWeight=FontWeight.SemiBold)
                 Text("Android 8.0+ · данные хранятся на устройстве · без рекламы и аналитических SDK",
                     color=MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Тёмная и светлая темы. Три режима графики.",

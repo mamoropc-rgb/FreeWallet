@@ -38,7 +38,7 @@ object UntilIncomeMath {
             while (date.isBefore(incomeDate)) {
                 check(count++ < 5000) { "Слишком много повторений запланированного платежа" }
                 if ("plan:${plan.id}:$date" !in postedKeys) {
-                    upcoming = Math.addExact(upcoming, Money.toBase(plan.amountMinor, account.rateMicros))
+                    upcoming = Math.addExact(upcoming, FxRates.toBase(s.settings, account.currency, plan.amountMinor))
                 }
                 if (plan.frequency == "ONCE") break
                 val next = LedgerMath.nextDate(date, plan.frequency, plan.anchorDay)

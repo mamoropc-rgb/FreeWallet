@@ -11,13 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.time.LocalDate
 import java.math.BigDecimal
-import java.math.RoundingMode
 
-fun rubRateMicro(text:String):Long {
-    val rate=BigDecimal(text.replace(" ","").replace(',','.'))
-    require(rate>BigDecimal.ZERO && rate<=BigDecimal(100000))
-    return rate.multiply(BigDecimal(1000000)).setScale(0,RoundingMode.HALF_UP).longValueExact()
-}
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
@@ -25,8 +19,8 @@ fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
     var name by remember {mutableStateOf("")}
     var currency by remember {mutableStateOf("RUB")}
     var initial by remember {mutableStateOf("")}
-    var rate by remember {mutableStateOf("1")}
     var chosenAccount by remember {mutableStateOf<Account?>(null)}
+    var pendingDelete by remember {mutableStateOf<Account?>(null)}
     var chosenBond by remember {mutableStateOf<Bond?>(null)}
     var nominal by remember {mutableStateOf("1000")}
     var market by remember {mutableStateOf("1000")}
@@ -40,8 +34,8 @@ fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
     LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(horizontal=18.dp,vertical=8.dp),
         verticalArrangement=Arrangement.spacedBy(11.dp)) {
         item {TitleBar("Счета","Деньги и инвестиции отдельно")}
-        item {TinySection("Денежные счета","+ Счёт"){currency="RUB";rate="1";start("account")}}
-        items(s.accounts,key={it.id}) {a->
+        item {TinySection("Денежные счета","+ Счёт"){currency="RUB";start("account")}}
+        items(s.accounts,key={AccountRowKeys.account(it.id)}) {a->
             KCard {
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -51,15 +45,21 @@ fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
                     }
                     MoneyLine(LedgerMath.accountLocal(a,s.entries),a.currency)
                 }
-                if(a.currency!="RUB") Text("Зафиксировано: ${Money.text(LedgerMath.accountBase(a,s.entries),"RUB")}",
-                    style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(a.currency!="RUB") {
+                    Text("Исторический эквивалент: ${Money.text(LedgerMath.accountBase(a,s.entries),"RUB")}",
+                        style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Текущий курс из «Ещё»: 1 ${a.currency} ≈ ${Money.text(FxRates.toBase(s.settings,a.currency,100L),"RUB")}",
+                        style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 Row(verticalAlignment=Alignment.CenterVertically) {
                     Checkbox(checked=a.included,onCheckedChange={vm.toggleAccount(a.id,it)})
                     Text("В общем балансе",style=MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.weight(1f))
-                    if(a.currency!="RUB") TextButton(onClick={chosenAccount=a;rate=BigDecimal.valueOf(a.rateMicros,6).toPlainString();dialog="rate"}) {
-                        Text("Курс")
-                    }
+                    TextButton(onClick={
+                        chosenAccount=a;name=a.name;currency=a.currency;initial=moneyValue(a.openingMinor)
+                        error=null;dialog="edit"
+                    }) { Text("Изменить") }
+                    TextButton(onClick={pendingDelete=a}) { Text("Удалить",color=MaterialTheme.colorScheme.error) }
                 }
             }
         }
@@ -74,7 +74,7 @@ fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
         }
         item {TinySection("Облигации","+ Облигация"){start("bond")}}
         if(s.bonds.isEmpty()) item {EmptyText("Создайте облигацию и добавьте партии покупки")}
-        items(s.bonds,key={it.id}) {b->
+        items(s.bonds,key={AccountRowKeys.bond(it.id)}) {b->
             val count=LedgerMath.bondQuantity(s,b.id)
             KCard {
                 Text(b.name,fontWeight=FontWeight.SemiBold)
@@ -100,15 +100,27 @@ fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
             }
         }
     }
+    if(pendingDelete!=null) {
+        val account=pendingDelete!!
+        val deletable=AccountRules.canDelete(s,account.id)
+        AlertDialog(onDismissRequest={pendingDelete=null},
+            title={Text("Удаление счёта")},
+            text={Text(if(deletable)
+                "Удалить «${account.name}»? Начальный остаток этого счёта исчезнет из общего баланса. Действие нельзя отменить."
+                else "Счёт нельзя удалить, пока он связан с операциями, планами, шаблонами или инвестициями, либо это последний счёт. Его можно исключить из общего баланса.")},
+            confirmButton={TextButton(enabled=deletable,onClick={vm.deleteAccount(account.id);pendingDelete=null}) {
+                Text("Удалить",color=MaterialTheme.colorScheme.error)
+            }},
+            dismissButton={TextButton(onClick={pendingDelete=null}) {Text("Отмена")}})
+    }
     if(dialog.isNotBlank()) ActionDialog(title=when(dialog){
-        "account"->"Новый счёт";"rate"->"Курс счёта";"bond"->"Новая облигация";
+        "account"->"Новый счёт";"edit"->"Изменить счёт";"bond"->"Новая облигация";
         "buy"->"Докупка облигаций";"sell"->"Продажа облигаций";"quote"->"Рыночная цена";else->"Купон"
     },onClose={dialog=""},submit={
         try {
             when(dialog) {
-                "account" -> vm.createAccount(name,currency,initial.takeIf{it.isNotBlank()}?.let(Money::parse)?:0,
-                    if(currency=="RUB")1000000 else rubRateMicro(rate))
-                "rate"->Unit
+                "account" -> vm.createAccount(name,currency,initial.takeIf{it.isNotBlank()}?.let(Money::parse)?:0)
+                "edit" -> vm.editAccount(requireNotNull(chosenAccount).id,name,currency,Money.parse(initial))
                 "bond"->vm.addBond(name,accountId,Money.parse(nominal),Money.parse(market),
                     (BigDecimal(couponYield.replace(',','.'))*BigDecimal(100)).intValueExact())
                 "buy"->vm.buyBond(requireNotNull(chosenBond).id,qty.toLong(),Money.parse(market),fee.takeIf{it.isNotBlank()}?.let(Money::parse)?:0)
@@ -116,23 +128,25 @@ fun AccountsTab(s:Snapshot,vm:KarmanViewModel) {
                 "quote"->vm.quote(requireNotNull(chosenBond).id,Money.parse(market))
                 "coupon"->vm.addCoupon(requireNotNull(chosenBond).id,LocalDate.parse(due),Money.parse(market))
             }
-            if(dialog=="rate") vm.changeAccountRate(requireNotNull(chosenAccount).id,rubRateMicro(rate))
             dialog=""
         } catch(ex:Exception) {error=ex.message?:"Проверьте данные"}
     }) {
         when(dialog) {
-            "account"->{
+            "account","edit"->{
+                val isEdit=dialog=="edit"
+                val hasLinks=isEdit && chosenAccount?.let { AccountRules.hasLinkedData(s,it.id) } == true
                 SimpleText("Название счёта",name,{name=it})
                 Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                     listOf("RUB","USD","EUR","BYN").forEach{cur->
-                        FilterChip(selected=currency==cur,onClick={currency=cur},label={Text(cur)})
+                        FilterChip(selected=currency==cur,onClick={currency=cur},enabled=!hasLinks,label={Text(cur)})
                     }
                 }
-                AmountInput("Начальный остаток",initial,{initial=it})
-                if(currency!="RUB") SimpleText("Сколько ₽ стоит 1 $currency",rate,{rate=it})
+                if(!hasLinks) AmountInput("Начальный остаток",initial,{initial=it})
+                else Text("Начальный остаток: ${Money.text(chosenAccount?.openingMinor?:0L,currency)}. В счёте есть связанные записи: можно изменить только название.",
+                    color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodySmall)
+                if(currency!="RUB") Text("Курс берётся из вкладки «Ещё» и применяется к новым операциям. Исторические суммы не пересчитываются.",
+                    color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodySmall)
             }
-            "rate"->{SimpleText("Сколько ₽ стоит 1 ${chosenAccount?.currency}",rate,{rate=it})
-                Text("Новый курс используется только для следующих операций. Прошлые суммы и основной баланс не меняются.")}
             "bond"->{
                 SimpleText("Название",name,{name=it})
                 Text("Счёт оплаты (RUB)")

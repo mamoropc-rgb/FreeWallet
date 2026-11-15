@@ -39,8 +39,9 @@ class KarmanViewModel(app: Application): AndroidViewModel(app) {
         execute { database.entry(Kind.TRANSFER,from,amount,"Перевод",date=date,toId=to,toAmount=toAmount) }
     fun editEntryDetails(id:Long,category:String,note:String,day:LocalDate)=execute{database.editEntryDetails(id,category,note,day)}
     fun deleteEntry(id:Long) = execute { database.deleteEntry(id) }
-    fun createAccount(name:String,currency:String,opening:Long,rate:Long) = execute { database.account(name,currency,opening,rate) }
-    fun changeAccountRate(id:Long,rate:Long)=execute{database.updateAccountRate(id,rate)}
+    fun createAccount(name:String,currency:String,opening:Long) = execute { database.account(name,currency,opening) }
+    fun editAccount(id:Long,name:String,currency:String,opening:Long) = execute { database.editAccount(id,name,currency,opening) }
+    fun deleteAccount(id:Long) = execute { database.deleteAccount(id) }
     fun toggleAccount(id:Long,include:Boolean)=execute{database.includeAccount(id,include)}
     fun addGoal(title:String,goal:Long)=execute{database.goal(title,goal,true)}
     fun saveGoal(id:Long,value:Long)=execute{database.saved(id,value)}
