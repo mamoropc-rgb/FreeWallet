@@ -36,6 +36,7 @@ fun BankImportSettingsCard(s: Snapshot, vm: KarmanViewModel) {
     }
     val rubAccounts = remember(s.accounts) { s.accounts.filter { it.currency == "RUB" } }
     val selected = rubAccounts.firstOrNull { it.id == s.settings.bankImportAccountId }
+    val linkedTBankAccounts = rubAccounts.filter { BankSubaccounts.isTBank(it.bankGroup) }
     KCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.NotificationsActive, contentDescription = null,
@@ -46,13 +47,18 @@ fun BankImportSettingsCard(s: Snapshot, vm: KarmanViewModel) {
             Switch(
                 checked = s.settings.bankImportEnabled,
                 onCheckedChange = { vm.pref("bankImportEnabled", if (it) "1" else "0") },
-                enabled = granted && selected != null
+                enabled = granted && (selected != null || linkedTBankAccounts.isNotEmpty())
             )
         }
         Text("Источник: уведомления Т-Банка. Сумма и название магазина сохраняются локально. Другие уведомления игнорируются.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall)
-        Text("Счёт для списания", fontWeight = FontWeight.Medium,
+        Text("Т-Банк: привязано счетов — ${linkedTBankAccounts.size}",fontWeight=FontWeight.Medium,
+            style = MaterialTheme.typography.labelMedium)
+        Text("Покупки по известным четырём цифрам карты попадут в соответствующий счёт. " +
+            "Если карт несколько и номер в уведомлении скрыт, покупка пропускается — без ошибочного списания.",
+            color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodySmall)
+        Text("Резервный счёт, если группа банка не настроена", fontWeight = FontWeight.Medium,
             style = MaterialTheme.typography.labelMedium)
         if (rubAccounts.isEmpty()) {
             Text("Сначала создайте рублёвый счёт во вкладке «Счета».",
@@ -74,8 +80,9 @@ fun BankImportSettingsCard(s: Snapshot, vm: KarmanViewModel) {
         OutlinedButton(onClick = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         }) { Text("Настроить доступ к уведомлениям") }
-        Text("Включите доступ в Android, выберите рублёвый счёт и активируйте переключатель. " +
-            "Неполные или неоднозначные сообщения не будут записаны. Возможна ручная проверка истории.",
+        Text("Включите доступ в Android. Для двух карт создайте два счёта, укажите «Т-Банк» " +
+            "и последние четыре цифры каждой карты в редакторе счёта. Резервный выбор используется " +
+            "только до настройки группы. Кешбэк никогда не импортируется.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.labelSmall)
     }

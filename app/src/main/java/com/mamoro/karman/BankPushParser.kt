@@ -5,7 +5,7 @@ import java.math.RoundingMode
 import java.util.Locale
 
 /** Extract only confirmed RUB purchases. Ancillary bank fields are never retained. */
-data class BankPurchase(val merchant: String, val amountMinor: Long)
+data class BankPurchase(val merchant: String, val amountMinor: Long, val cardLast4: String? = null)
 
 object BankPushParser {
     const val T_BANK_PACKAGE = "com.idamob.tinkoff.android"
@@ -15,6 +15,7 @@ object BankPushParser {
         """(?iu)покупка\s+(?:на\s+)?(\d[\d\s\u00a0\u202f]*(?:[,.]\d{1,2})?)\s*(?:₽|руб(?:\.|ля|лей)?)"""
     )
     private val whitespace = Regex("""\s+""")
+    private val cardSuffix = Regex("""(?iu)(?:сч[её]т\s+карты|карты|карта)\s*\*([0-9]{4})(?![0-9])""")
 
     fun parse(lines: List<String>): List<BankPurchase> = lines.asSequence()
         .mapNotNull(::parseLine)
@@ -42,7 +43,9 @@ object BankPushParser {
                 .movePointRight(2).longValueExact()
         } catch (_: Exception) { return null }
         if (amount !in 1..Money.MAX_MINOR) return null
-        return BankPurchase(merchant, amount)
+        // Only exact four-digit card endings are used for routing; incomplete values are ignored.
+        val suffix=cardSuffix.find(normalized.substring(match.range.last + 1))?.groupValues?.get(1)
+        return BankPurchase(merchant, amount, suffix)
     }
 
     fun normalizeMerchant(name: String): String = name.trim()

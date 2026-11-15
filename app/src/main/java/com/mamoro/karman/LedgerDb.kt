@@ -25,12 +25,13 @@ private fun Cursor.flag(k: String): Boolean = lng(k) == 1L
 private fun Cursor.nullLong(k: String): Long? = getColumnIndexOrThrow(k).let { i -> if(isNull(i)) null else getLong(i) }
 
 /** Brand-new schema: no old app database or package is accessed. */
-class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v1.db", null, 1) {
+class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v1.db", null, 2) {
     override fun onConfigure(db: SQLiteDatabase) { super.onConfigure(db); db.setForeignKeyConstraintsEnabled(true) }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE accounts(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, currency TEXT NOT NULL,
             opening_minor INTEGER NOT NULL, opening_base_minor INTEGER NOT NULL, rate_micros INTEGER NOT NULL,
-            included INTEGER NOT NULL DEFAULT 1)""")
+            included INTEGER NOT NULL DEFAULT 1,
+            bank_group TEXT NOT NULL DEFAULT '', card_last4 TEXT NOT NULL DEFAULT '')""")
         db.execSQL("""CREATE TABLE entries(id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL, kind TEXT NOT NULL,
             from_account INTEGER NOT NULL REFERENCES accounts(id), amount_minor INTEGER NOT NULL,
             base_minor INTEGER NOT NULL, category TEXT NOT NULL, note TEXT NOT NULL,
@@ -56,8 +57,11 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             "opening_minor" to 0L, "opening_base_minor" to 0L, "rate_micros" to 1000000L, "included" to 1))
     }
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) {
-        // No destructive fallback: every future schema change must get an explicit migration.
-        throw IllegalStateException("Missing migration from $old to $new")
+        if (old == 1 && new == 2) {
+            // Preserve all account IDs, balances, linked operations and investments.
+            db.execSQL("ALTER TABLE accounts ADD COLUMN bank_group TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE accounts ADD COLUMN card_last4 TEXT NOT NULL DEFAULT ''")
+        } else throw IllegalStateException("Missing migration from $old to $new")
     }
     fun snapshot(): Snapshot {
         val db = readableDatabase
@@ -85,7 +89,8 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         )
         return Snapshot(
             accounts=read("SELECT * FROM accounts ORDER BY id") { Account(it.lng("id"),it.str("name"),it.str("currency"),
-                it.lng("opening_minor"),it.lng("opening_base_minor"),it.lng("rate_micros"),it.flag("included")) },
+                it.lng("opening_minor"),it.lng("opening_base_minor"),it.lng("rate_micros"),it.flag("included"),
+                it.str("bank_group"),it.str("card_last4")) },
             entries=read("SELECT * FROM entries ORDER BY day DESC,id DESC") { Entry(it.lng("id"),it.str("day"),it.str("kind"),
                 it.lng("from_account"),it.lng("amount_minor"),it.lng("base_minor"),it.str("category"),
                 it.str("note"),it.nullLong("to_account"),it.nullLong("to_amount_minor"),
@@ -118,24 +123,30 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             "amount_minor" to local,"base_minor" to base,"category" to category,"note" to note,
             "to_account" to destination,"to_amount_minor" to credited,"source_key" to source))
     }
-    fun account(name:String,currency:String,opening:Long):Long=mutation { db ->
+    fun account(name:String,currency:String,opening:Long,bankGroup:String="",cardLast4:String=""):Long=mutation { db ->
         require(name.isNotBlank()&&name.length<=80&&currency in listOf("RUB","USD","EUR","BYN"))
         require(opening in 0..Money.MAX_MINOR)
-        val rate = FxRates.basePerNativeMicros(snapshot().settings, currency)
+        val current=snapshot()
+        val bank=BankSubaccounts.cleanBank(bankGroup)
+        BankSubaccounts.verifyMetadata(current.accounts,bank,cardLast4)
+        val rate = FxRates.basePerNativeMicros(current.settings, currency)
         db.insertOrThrow("accounts",null,values("name" to name,"currency" to currency,"opening_minor" to opening,
-            "opening_base_minor" to Money.toBase(opening,rate),"rate_micros" to rate,"included" to 1))
+            "opening_base_minor" to Money.toBase(opening,rate),"rate_micros" to rate,"included" to 1,
+            "bank_group" to bank,"card_last4" to cardLast4))
     }
     fun includeAccount(id:Long,include:Boolean)=mutation { db ->
         require(db.update("accounts",values("included" to include),"id=?",arrayOf(id.toString()))==1)
     }
-    fun editAccount(id:Long,name:String,currency:String,opening:Long) = mutation { db ->
+    fun editAccount(id:Long,name:String,currency:String,opening:Long,bankGroup:String="",cardLast4:String="") = mutation { db ->
         val s=snapshot()
         val old=s.accounts.firstOrNull { it.id==id } ?: error("Счёт не найден")
         require(name.isNotBlank() && name.length<=80 && currency in listOf("RUB","USD","EUR","BYN"))
         require(opening in 0..Money.MAX_MINOR)
+        val bank=BankSubaccounts.cleanBank(bankGroup)
+        BankSubaccounts.verifyMetadata(s.accounts,bank,cardLast4,id)
         if (AccountRules.hasLinkedData(s,id)) {
             require(currency==old.currency && opening==old.openingMinor) {
-                "Счёт связан с операциями, планами или инвестициями: можно изменить только название"
+                "Счёт связан с операциями, планами или инвестициями: нельзя менять валюту и начальный остаток"
             }
         }
         val rate=if (currency==old.currency && opening==old.openingMinor) old.rateMicros
@@ -143,7 +154,8 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         require(db.update("accounts",values("name" to name,"currency" to currency,
             "opening_minor" to opening,"opening_base_minor" to
                 if (currency==old.currency && opening==old.openingMinor) old.openingBaseMinor else Money.toBase(opening,rate),
-            "rate_micros" to rate),"id=?",arrayOf(id.toString()))==1)
+            "rate_micros" to rate,"bank_group" to bank,"card_last4" to cardLast4),
+            "id=?",arrayOf(id.toString()))==1)
     }
     fun deleteAccount(id:Long) = mutation { db ->
         val s=snapshot()
@@ -175,9 +187,6 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         if (origin != BankPushParser.T_BANK_PACKAGE || purchases.isEmpty()) return@mutation 0
         val state=snapshot()
         if (!state.settings.bankImportEnabled) return@mutation 0
-        val account=state.accounts.firstOrNull {
-            it.id==state.settings.bankImportAccountId && it.currency=="RUB"
-        } ?: return@mutation 0
         val now=System.currentTimeMillis()
         // Refuse stale or implausibly future-dated pushes, rather than backfill an unknown history.
         if (happenedAt < now - 3L*24*60*60*1000 || happenedAt > now + 5L*60*1000) return@mutation 0
@@ -187,6 +196,8 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         purchases.distinct().take(15).forEach { purchase ->
             if (purchase.merchant.length !in 2..75 || purchase.amountMinor !in 1..Money.MAX_MINOR)
                 return@forEach
+            val account=BankSubaccounts.routeTBankPurchase(
+                state.accounts,purchase,state.settings.bankImportAccountId) ?: return@forEach
             val prefix=BankImportRules.sourcePrefix(origin,account.id,day,purchase)
             val prior=mutableListOf<Long>()
             db.rawQuery("SELECT source_key FROM entries WHERE source_key LIKE ?",
@@ -347,8 +358,13 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         require(s.accounts.all { a ->
             a.name.isNotBlank() && a.name.length<=80 && a.currency in listOf("RUB","USD","EUR","BYN") &&
                 a.openingMinor in 0..Money.MAX_MINOR && a.openingBaseMinor in 0..Money.MAX_MINOR &&
-                a.rateMicros in 1..100000000000L && (a.currency!="RUB"||a.rateMicros==1000000L)
+                a.rateMicros in 1..100000000000L && (a.currency!="RUB"||a.rateMicros==1000000L) &&
+                a.bankGroup.length<=60 && (a.cardLast4.isEmpty() || a.cardLast4.matches(Regex("[0-9]{4}"))) &&
+                (a.cardLast4.isEmpty() || a.bankGroup.isNotBlank())
         })
+        s.accounts.forEach { a ->
+            BankSubaccounts.verifyMetadata(s.accounts.filter { it.id != a.id },a.bankGroup,a.cardLast4,a.id)
+        }
         val accIds=s.accounts.map{it.id}.toSet()
         require(s.entries.all { e ->
             e.fromAccount in accIds && e.toAccount?.let{it in accIds}!=false &&
@@ -403,7 +419,7 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
         require(json.length<=30_000_000) { "Файл слишком велик" }
         val root=JSONObject(json);require(root.optString("format")=="karman-v1"&&root.optInt("schema")==1)
         val allowedColumns=mapOf(
-            "accounts" to setOf("id","name","currency","opening_minor","opening_base_minor","rate_micros","included"),
+            "accounts" to setOf("id","name","currency","opening_minor","opening_base_minor","rate_micros","included","bank_group","card_last4"),
             "entries" to setOf("id","day","kind","from_account","amount_minor","base_minor","category","note","to_account","to_amount_minor","source_key"),
             "goals" to setOf("id","title","target_minor","saved_minor","reserve"),
             "plans" to setOf("id","title","amount_minor","account_id","due","frequency","auto","reserve","anchor_day"),

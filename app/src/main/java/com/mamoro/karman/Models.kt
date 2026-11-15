@@ -4,7 +4,8 @@ package com.mamoro.karman
 data class Account(
     val id: Long, val name: String, val currency: String,
     val openingMinor: Long, val openingBaseMinor: Long,
-    val rateMicros: Long, val included: Boolean = true
+    val rateMicros: Long, val included: Boolean = true,
+    val bankGroup: String = "", val cardLast4: String = ""
 )
 
 data class Entry(
