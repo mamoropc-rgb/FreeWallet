@@ -177,8 +177,10 @@ fun PremiumGlassPanel(
             Box(Modifier.matchParentSize().background(
                 Brush.linearGradient(panelGradient)))
         }
-        Column(Modifier.fillMaxWidth().padding(16.dp),
-            verticalArrangement=Arrangement.spacedBy(6.dp),content=content)
+        CompositionLocalProvider(LocalContentColor provides colors.onSurface) {
+            Column(Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement=Arrangement.spacedBy(6.dp),content=content)
+        }
     }
 }
 
@@ -193,7 +195,8 @@ private fun PremiumHeader(s: Snapshot, vm: KarmanViewModel) {
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text("Кошелёк", fontWeight=FontWeight.Bold, style=MaterialTheme.typography.titleLarge)
+            Text("Кошелёк", fontWeight=FontWeight.Bold, style=MaterialTheme.typography.titleLarge,
+                color=MaterialTheme.colorScheme.onBackground)
             Text("Финансы под контролем", style=MaterialTheme.typography.labelSmall,
                 color=MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -239,6 +242,7 @@ private fun PremiumBalance(s:Snapshot,vm:KarmanViewModel) {
                 Spacer(Modifier.height(7.dp))
                 Text(Money.text(LedgerMath.shownBalance(s),s.settings.displayCurrency),
                     fontSize=29.sp,fontWeight=FontWeight.Bold,maxLines=1,
+                    color=MaterialTheme.colorScheme.onSurface,
                     overflow=TextOverflow.Ellipsis)
                 Spacer(Modifier.height(10.dp))
                 LazyRow(horizontalArrangement=Arrangement.spacedBy(6.dp)) {
@@ -270,7 +274,8 @@ private fun QuickAction(title:String, icon: @Composable () -> Unit,click:()->Uni
             horizontalAlignment=Alignment.CenterHorizontally) {
             icon()
             Spacer(Modifier.height(3.dp))
-            Text(title,style=MaterialTheme.typography.labelSmall,maxLines=1)
+            Text(title,style=MaterialTheme.typography.labelSmall,maxLines=1,
+                color=MaterialTheme.colorScheme.onSurface)
         }
     }
 }

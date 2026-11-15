@@ -32,6 +32,7 @@ class KarmanViewModel(app: Application): AndroidViewModel(app) {
         } }
     } }
     fun refreshScheduled()=execute{database.processAutoPlans()}
+    fun refreshFromBankImport()=execute { /* Reload the latest SQLite snapshot. */ }
     fun dismissIssue(){ _issue.value=null }
     fun income(kind:String,accountId:Long,amount:Long,category:String,note:String,day:LocalDate=LocalDate.now()) =
         execute { database.entry(kind,accountId,amount,category,note,day) }

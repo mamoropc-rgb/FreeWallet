@@ -38,6 +38,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import java.time.LocalDate
 import java.time.YearMonth
 
@@ -63,7 +64,9 @@ fun KarmanTheme(mode:String, graphicsMode:String, content: @Composable () -> Uni
         error=Color(0xFFC63249),outline=Color(0xFFCCC2E2)
     )
     androidx.compose.runtime.CompositionLocalProvider(LocalPremiumGraphics provides graphicsMode) {
-        MaterialTheme(colorScheme=scheme, typography=Typography(),content=content)
+        MaterialTheme(colorScheme=scheme, typography=Typography()) {
+            CompositionLocalProvider(LocalContentColor provides scheme.onBackground) { content() }
+        }
     }
 }
 
@@ -115,6 +118,7 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
         vm.refreshScheduled()
     }
     LaunchedEffect(issue) { if(issue!=null) { snackbar.showSnackbar(issue?:"Ошибка"); vm.dismissIssue() } }
+    LaunchedEffect(vm) { BankImportUpdates.updates.collect { vm.refreshFromBankImport() } }
     BackHandler(enabled=true) {
         when { showQuick->{showQuick=false;quick=null}
             pager.currentPage!=0->pager.requestScrollToPage(0)
@@ -125,6 +129,7 @@ fun KarmanApp(vm:KarmanViewModel=viewModel()) {
     PremiumAppBackground(Modifier.matchParentSize())
     Scaffold(
         containerColor=Color.Transparent,
+        contentColor=MaterialTheme.colorScheme.onBackground,
         snackbarHost={SnackbarHost(snackbar)},
         floatingActionButton={
             // Home already has four prominent actions; avoid covering the Goals card.

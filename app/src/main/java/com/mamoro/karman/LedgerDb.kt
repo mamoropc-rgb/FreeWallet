@@ -79,7 +79,9 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
                 runCatching { LocalDate.parse(it) }.isSuccess
             },
             themeMode=prefs["themeMode"]?.takeIf { it in setOf("DARK","LIGHT","SYSTEM") } ?: "DARK",
-            graphicsMode=prefs["graphicsMode"]?.takeIf { it in setOf("MAX","BALANCED","FAST") } ?: "BALANCED"
+            graphicsMode=prefs["graphicsMode"]?.takeIf { it in setOf("MAX","BALANCED","FAST") } ?: "BALANCED",
+            bankImportEnabled=bool("bankImportEnabled"),
+            bankImportAccountId=prefs["bankImportAccountId"]?.toLongOrNull()?.takeIf { it > 0 } ?: 0L
         )
         return Snapshot(
             accounts=read("SELECT * FROM accounts ORDER BY id") { Account(it.lng("id"),it.str("name"),it.str("currency"),
@@ -165,16 +167,55 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
             insertEntry(db,kind,accountId,amount,base,"Перевод",note,date.toString(),toId,credit)
         } else insertEntry(db,kind,accountId,amount,base,category,note,date.toString())
     }
+    /** Import parsed purchases only after explicit opt-in and RUB account selection.
+     * No notification text, additional rewards, or financial identifiers are stored.
+     * Entries are committed atomically; source keys block group/individual repost duplicates.
+     */
+    fun importBankPurchases(origin:String,purchases:List<BankPurchase>,happenedAt:Long):Int=mutation { db ->
+        if (origin != BankPushParser.T_BANK_PACKAGE || purchases.isEmpty()) return@mutation 0
+        val state=snapshot()
+        if (!state.settings.bankImportEnabled) return@mutation 0
+        val account=state.accounts.firstOrNull {
+            it.id==state.settings.bankImportAccountId && it.currency=="RUB"
+        } ?: return@mutation 0
+        val now=System.currentTimeMillis()
+        // Refuse stale or implausibly future-dated pushes, rather than backfill an unknown history.
+        if (happenedAt < now - 3L*24*60*60*1000 || happenedAt > now + 5L*60*1000) return@mutation 0
+        val day=BankImportRules.notificationDay(happenedAt)
+        val seconds=happenedAt/1000L
+        var inserted=0
+        purchases.distinct().take(15).forEach { purchase ->
+            if (purchase.merchant.length !in 2..75 || purchase.amountMinor !in 1..Money.MAX_MINOR)
+                return@forEach
+            val prefix=BankImportRules.sourcePrefix(origin,account.id,day,purchase)
+            val prior=mutableListOf<Long>()
+            db.rawQuery("SELECT source_key FROM entries WHERE source_key LIKE ?",
+                arrayOf("$prefix%") ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    cursor.getString(0)?.removePrefix(prefix)?.toLongOrNull()?.let(prior::add)
+                }
+            }
+            if (!BankImportRules.duplicate(prior,seconds)) {
+                insertEntry(db,Kind.EXPENSE,account.id,purchase.amountMinor,purchase.amountMinor,
+                    purchase.merchant,"",day,source="$prefix$seconds")
+                inserted++
+            }
+        }
+        inserted
+    }
+
     fun editEntryDetails(id:Long,category:String,note:String,day:LocalDate)=mutation { db ->
         val e=snapshot().entries.first{it.id==id}
-        require(e.kind in listOf(Kind.EXPENSE,Kind.INCOME) && e.sourceKey==null)
+        require(e.kind in listOf(Kind.EXPENSE,Kind.INCOME) &&
+            (e.sourceKey==null || e.sourceKey.startsWith("bank:v1:")))
         require(category.isNotBlank() && category.length<=80 && note.length<=500)
         db.update("entries",values("category" to category,"note" to note,"day" to day.toString()),"id=?",arrayOf(id.toString()))
     }
     fun deleteEntry(id:Long)=mutation { db ->
         val e=snapshot().entries.first {it.id==id}
         // Special transactions have corresponding lot or coupon state and cannot be removed independently.
-        require(e.kind in listOf(Kind.INCOME,Kind.EXPENSE,Kind.TRANSFER) && e.sourceKey==null) { "Системную запись удалять нельзя" }
+        require(e.kind in listOf(Kind.INCOME,Kind.EXPENSE,Kind.TRANSFER) &&
+            (e.sourceKey==null || e.sourceKey.startsWith("bank:v1:"))) { "Системную запись удалять нельзя" }
         db.delete("entries","id=?",arrayOf(id.toString()))
     }
     fun goal(title:String,target:Long,reserve:Boolean)=mutation { db ->
@@ -283,9 +324,16 @@ class LedgerDb(ctx: Context): SQLiteOpenHelper(ctx.applicationContext, "karman_v
     }
     fun setPreference(key:String,value:String)=mutation { db ->
         require(key in setOf("displayCurrency","usdPerBaseMicros","eurPerBaseMicros","bynPerBaseMicros",
-            "extraReserveMinor","sharedReserveMinor","coveredPlansMinor","includeInvestments","seasonal","nextIncomeDate","themeMode","graphicsMode"))
+            "extraReserveMinor","sharedReserveMinor","coveredPlansMinor","includeInvestments","seasonal","nextIncomeDate","themeMode","graphicsMode", "bankImportEnabled", "bankImportAccountId"))
         require(value.length<=50)
         if (key=="nextIncomeDate") LocalDate.parse(value)
+        if (key=="bankImportEnabled") require(value == "0" || value == "1")
+        if (key=="bankImportAccountId") {
+            val id=value.toLongOrNull() ?: error("Некорректный идентификатор счёта")
+            require(snapshot().accounts.any { it.id==id && it.currency=="RUB" }) {
+                "Для автоматических покупок выберите рублёвый счёт"
+            }
+        }
         if (key=="themeMode") require(value in setOf("DARK","LIGHT","SYSTEM"))
         if (key=="graphicsMode") require(value in setOf("MAX","BALANCED","FAST"))
         if (key in setOf("usdPerBaseMicros","eurPerBaseMicros","bynPerBaseMicros")) {

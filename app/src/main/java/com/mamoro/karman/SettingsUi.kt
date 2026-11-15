@@ -99,6 +99,7 @@ fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
                     color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        item { BankImportSettingsCard(s, vm) }
         item {
             KCard {
                 Text("База расчёта — российский рубль",fontWeight=FontWeight.SemiBold)
@@ -177,7 +178,7 @@ fun SettingsTab(s:Snapshot,vm:KarmanViewModel) {
         }
         item {
             KCard {
-                Text("Карман · версия 1.0.3 · Premium Glass",fontWeight=FontWeight.SemiBold)
+                Text("Карман · версия 1.0.4 · Premium Glass",fontWeight=FontWeight.SemiBold)
                 Text("Android 8.0+ · данные хранятся на устройстве · без рекламы и аналитических SDK",
                     color=MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Тёмная и светлая темы. Три режима графики.",

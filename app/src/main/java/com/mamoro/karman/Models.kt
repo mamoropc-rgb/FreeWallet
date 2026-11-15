@@ -32,7 +32,9 @@ data class Settings(
     val includeInvestments: Boolean = false, val seasonal: Boolean = false,
     val nextIncomeDate: String? = null,
     val themeMode: String = "DARK",
-    val graphicsMode: String = "BALANCED"
+    val graphicsMode: String = "BALANCED",
+    val bankImportEnabled: Boolean = false,
+    val bankImportAccountId: Long = 0L
 )
 data class Snapshot(
     val accounts: List<Account> = emptyList(), val entries: List<Entry> = emptyList(),
