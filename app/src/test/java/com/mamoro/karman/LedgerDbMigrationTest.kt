@@ -32,7 +32,7 @@ class LedgerDbMigrationTest {
         val helper=LedgerDb(context)
         try {
             val db=helper.writableDatabase
-            assertEquals(2,db.version)
+            assertEquals(3,db.version)
             db.rawQuery("PRAGMA table_info(accounts)",null).use { cursor ->
                 val names=mutableSetOf<String>()
                 while(cursor.moveToNext()) names.add(cursor.getString(1))
@@ -46,6 +46,10 @@ class LedgerDbMigrationTest {
                 assertEquals(100000L,cursor.getLong(2))
                 assertEquals("",cursor.getString(3))
                 assertEquals("",cursor.getString(4))
+            }
+            db.rawQuery("SELECT count(*) FROM categories",null).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertTrue(cursor.getLong(0)>0)
             }
             db.rawQuery("SELECT id,amount_minor FROM entries",null).use { cursor ->
                 assertTrue(cursor.moveToFirst())
