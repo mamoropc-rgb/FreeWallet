@@ -1,0 +1,114 @@
+name: Karman Android — verified build and signed update
+on:
+  push:
+    branches: [main, master, 'feature/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: karman-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify checked-in source (no CI-time rewriting)
+        shell: bash
+        run: |
+          test -f settings.gradle.kts
+          test -f app/src/main/java/com/mamoro/karman/PremiumHomeUi.kt
+          test -f app/src/main/java/com/mamoro/karman/UntilIncomeMath.kt
+          grep -q 'versionCode = 3' app/build.gradle.kts
+          grep -q 'versionName = "1.0.2"' app/build.gradle.kts
+          if find . -name '*.p12' -o -name '*.jks' -o -name '*.keystore' | grep -q .; then
+            echo 'Private signing material must not be in the repository'; exit 1
+          fi
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+      - name: SDK platform 35
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Test, lint, assemble debug
+        run: gradle --no-daemon --console=plain :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      - name: Upload debug APK (test only, not update-compatible)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Karman-1.0.2-DEBUG-test-only
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Validate stable signing identity
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KARMAN_KEYSTORE_BASE64 || secrets.KARMAN_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.KARMAN_STORE_PASSWORD || secrets.KARMAN_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KARMAN_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KARMAN_KEY_ALIAS }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo 'Release signing secrets are missing. See SIGNING-SETUP.md.'
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/karman-release.p12"
+          chmod 600 "$RUNNER_TEMP/karman-release.p12"
+          export KARMAN_STORE_PASSWORD="$STORE_PASSWORD"
+          actual=$(keytool -list -v -storetype PKCS12 \
+            -keystore "$RUNNER_TEMP/karman-release.p12" -storepass:env KARMAN_STORE_PASSWORD \
+            -alias "$KEY_ALIAS" | awk '/SHA256:/{gsub(":", "", $2); print toupper($2); exit}')
+          expected='72316DB9E71402D3D8818BE2F7297597F08A643EB7DD7D1E1EBFDDE0DEEBB2A8'
+          if [ "$actual" != "$expected" ]; then
+            echo 'The signing certificate is not the original Karman release certificate.'
+            exit 1
+          fi
+          echo 'Original signing certificate verified.'
+      - name: Assemble signed, update-compatible APK
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          KARMAN_KEYSTORE_PATH: ${{ runner.temp }}/karman-release.p12
+          KARMAN_STORE_PASSWORD: ${{ secrets.KARMAN_STORE_PASSWORD || secrets.KARMAN_KEYSTORE_PASSWORD }}
+          KARMAN_KEY_PASSWORD: ${{ secrets.KARMAN_KEY_PASSWORD }}
+          KARMAN_KEY_ALIAS: ${{ secrets.KARMAN_KEY_ALIAS }}
+        run: gradle --no-daemon --console=plain :app:assembleRelease
+      - name: Verify signed APK certificate and signature
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        shell: bash
+        run: |
+          apk=app/build/outputs/apk/release/app-release.apk
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose "$apk"
+          actual=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$apk" \
+            | awk '/Signer #1 certificate SHA-256 digest:/{print toupper($NF); exit}')
+          expected='72316DB9E71402D3D8818BE2F7297597F08A643EB7DD7D1E1EBFDDE0DEEBB2A8'
+          [ "$actual" = "$expected" ] || { echo 'Incorrect APK certificate fingerprint'; exit 1; }
+          echo 'APK signature and original signing identity verified.'
+      - name: Upload signed APK for future updates
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Karman-1.0.2-RELEASE-signed
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Karman-1.0.2-verification-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
